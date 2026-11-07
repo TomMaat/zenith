@@ -54,12 +54,13 @@ const WELCOME_CHANNEL_ID = '1565405396527489134';
 const PRODUCT = 'Zenith Custom Bypass';
 const STATUS_INTERVAL = 8000;
 
-// ===== Payment Methods (geen emoji) =====
+// ===== Payment Methods (met emoji's) =====
 const PAYMENT_METHODS = {
-  ideal: 'iDeal',
-  paypal: 'PayPal',
-  crypto: 'Crypto (LTC)',
-  bank: 'Bank Transfer',
+  ideal:  { name: 'iDeal',        emoji: '<:ideal:1564724669129560174>' },
+  tikkie: { name: 'Tikkie',       emoji: '<:tikkie:1564724092244983958>' },
+  paypal: { name: 'PayPal',       emoji: '<:paypal:1564726369219510354>' },
+  crypto: { name: 'Crypto (LTC)', emoji: '<:ltc:1564724536979759124>' },
+  bank:   { name: 'Bank Transfer', emoji: '<:bank:1564724257164886078>' },
 };
 
 const TICKET_CATEGORIES = {
@@ -130,6 +131,12 @@ function formatShortDuration(ms) {
   if (ms >= 3600000) return `${Math.round(ms / 3600000)}h`;
   if (ms >= 60000) return `${Math.round(ms / 60000)}m`;
   return `${Math.round(ms / 1000)}s`;
+}
+
+// Helper: haal emoji-ID uit "<:naam:ID>" string
+function emojiToId(emojiStr) {
+  const match = emojiStr.match(/:(\d+)>/);
+  return match ? match[1] : null;
 }
 
 // ===== Commands =====
@@ -643,7 +650,7 @@ async function updateProductPanel() {
   } catch (e) { console.error('updateProductPanel:', e.message); }
 }
 
-// ===== Payment Methods (geen emoji) =====
+// ===== Payment Methods (met emoji's + Tikkie) =====
 const getPaymentMethodsMessageId = async () => (await readGist()).paymentMethodsMessageId;
 async function setPaymentMethodsMessageId(id) { const d = await readGist(); d.paymentMethodsMessageId = id; await writeGist(d); }
 
@@ -655,10 +662,11 @@ async function setupPaymentMethods() {
       .setTitle('Payment Methods')
       .setColor(COLOR_DARK)
       .setDescription(
-        `→   **(iDeal)**\n` +
-        `→  **(PayPal)**\n` +
-        `→  **(Cryptocurrencies, LTC) = 10% Off!**\n` +
-        `→  **(Bank Transfer)**\n\n` +
+        `→   ${PAYMENT_METHODS.ideal.emoji}  **(iDeal)**\n` +
+        `→   ${PAYMENT_METHODS.tikkie.emoji}  **(Tikkie)**\n` +
+        `→   ${PAYMENT_METHODS.paypal.emoji}  **(PayPal)**\n` +
+        `→   ${PAYMENT_METHODS.crypto.emoji}  **(Cryptocurrencies, LTC) = 10% Off!**\n` +
+        `→   ${PAYMENT_METHODS.bank.emoji}  **(Bank Transfer)**\n\n` +
         `-# Please share your suggestions for new payment methods we can add.`
       );
     const messageId = await getPaymentMethodsMessageId();
@@ -675,7 +683,7 @@ async function setupPaymentMethods() {
   } catch (e) { console.error('setupPaymentMethods:', e.message); }
 }
 
-// ===== Rules + Verify (vervangt verify kanaal) =====
+// ===== Rules + Verify =====
 const getRulesMessageId = async () => (await readGist()).rulesMessageId;
 async function setRulesMessageId(id) { const d = await readGist(); d.rulesMessageId = id; await writeGist(d); }
 
@@ -1064,7 +1072,7 @@ function notLegitReviewRow() {
   );
 }
 
-// ===== Create ticket helper (voor dropdowns/modals) =====
+// ===== Create ticket helper =====
 async function createTicket(guild, user, categoryKey, extraData = {}) {
   const cat = TICKET_CATEGORIES[categoryKey];
   if (!cat) throw new Error('Unknown category');
@@ -1090,7 +1098,6 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
     .setDescription(`<@${user.id}> — describe your question below.`)
     .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
 
-  // Extra velden tonen indien purchase
   if (extraData.productName) {
     embed.addFields(
       { name: 'Product', value: extraData.productName, inline: true },
@@ -1489,7 +1496,6 @@ client.on('interactionCreate', async (i) => {
     if (i.customId === 'ticket_category_select') {
       const choice = i.values[0];
       if (choice === 'purchase') {
-        // Start 3-step dropdown flow
         await i.deferReply({ ephemeral: true });
         const products = await getProducts();
         const productNames = Object.keys(products);
@@ -1505,7 +1511,6 @@ client.on('interactionCreate', async (i) => {
         });
       }
 
-      // For support & bug: open modal
       const cat = TICKET_CATEGORIES[choice];
       if (!cat) return i.reply({ content: 'Unknown category.', ephemeral: true });
       const modal = new ModalBuilder().setCustomId(`modal_create_ticket_${choice}`).setTitle(`${cat.name} Ticket`);
@@ -1545,7 +1550,16 @@ client.on('interactionCreate', async (i) => {
       const payMenu = new StringSelectMenuBuilder()
         .setCustomId('purchase_payment_select')
         .setPlaceholder('Select a payment method')
-        .addOptions(Object.entries(PAYMENT_METHODS).map(([key, name]) => ({ label: name, value: key })));
+        .addOptions(
+          Object.entries(PAYMENT_METHODS).map(([key, m]) => {
+            const id = emojiToId(m.emoji);
+            return {
+              label: m.name,
+              value: key,
+              emoji: id ? { id } : undefined,
+            };
+          })
+        );
       return i.update({
         embeds: [new EmbedBuilder().setTitle('🛒 Purchase')
           .setDescription(`**Product:** ${data.productName}\n**Plan:** ${data.plan}\n\nWhich payment method do you want to use?`)
@@ -1559,7 +1573,7 @@ client.on('interactionCreate', async (i) => {
       const data = pendingPurchases.get(i.user.id);
       if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
       data.payment = i.values[0];
-      const paymentName = PAYMENT_METHODS[data.payment];
+      const paymentName = PAYMENT_METHODS[data.payment]?.name || data.payment;
       await i.deferUpdate();
       try {
         const guild = await client.guilds.fetch(GUILD_ID);
@@ -1592,7 +1606,6 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Modals =====
   if (i.isModalSubmit()) {
-    // Product add
     if (i.customId === 'product_add_modal') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const name = i.fields.getTextInputValue('product_name').trim();
@@ -1612,7 +1625,6 @@ client.on('interactionCreate', async (i) => {
       } catch (e) { return i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
     }
 
-    // Ticket creation via modal (support / bug)
     if (i.customId.startsWith('modal_create_ticket_')) {
       const categoryKey = i.customId.replace('modal_create_ticket_', '');
       const question = i.fields.getTextInputValue('question_answer');
@@ -1630,7 +1642,6 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Buttons =====
   if (i.isButton()) {
-    // Rules accept
     if (i.customId === 'verify_accept_rules') {
       try {
         if (i.member.roles.cache.has(VERIFY_ROLE_ID)) return i.reply({ content: '❌ You are already verified!', ephemeral: true });
