@@ -30,6 +30,7 @@ const PORT = process.env.PORT || 3000;
 const COLOR_LIGHT_BLUE = 0x00bfff;
 const COLOR_RED = 0xff4444;
 const COLOR_GOLD = 0xffd700;
+const COLOR_DARK = 0x2b2b2b;
 
 // ===== Settings =====
 const REVIEW_CHANNEL_ID = '1568416985832890438';
@@ -37,7 +38,7 @@ const REQUIRED_ROLE_ID = '1564635023787950090';
 const PURCHASE_ROLE_ID = '1564415128659824731';
 const PURCHASE_LOG_CHANNEL_ID = '1564761373026681205';
 const SUGGESTIE_CHANNEL_ID = '1568755542799945909';
-const VERIFY_CHANNEL_ID = '1568755725751029851';
+const RULES_CHANNEL_ID = '1564632375336505344';
 const VERIFY_ROLE_ID = '1564415134171013154';
 const PRICING_CHANNEL_ID = '1568415867677712576';
 const TICKET_PANEL_CHANNEL_ID = '1564415332737884233';
@@ -53,12 +54,30 @@ const WELCOME_CHANNEL_ID = '1565405396527489134';
 const PRODUCT = 'Zenith Custom Bypass';
 const STATUS_INTERVAL = 8000;
 
+// ===== Payment Methods (geen emoji) =====
+const PAYMENT_METHODS = {
+  ideal: 'iDeal',
+  paypal: 'PayPal',
+  crypto: 'Crypto (LTC)',
+  bank: 'Bank Transfer',
+};
+
 const TICKET_CATEGORIES = {
   support: { name: 'Support', prefix: 'support', categoryId: '1568757364494958712', emoji: '🎫', color: COLOR_LIGHT_BLUE },
   purchase: { name: 'Purchase', prefix: 'purchase', categoryId: '1568757476931932202', emoji: '🛒', color: COLOR_LIGHT_BLUE },
   bug: { name: 'Bug', prefix: 'bug', categoryId: '1568757622327222313', emoji: '⚠️', color: COLOR_RED },
   notlegit: { name: 'Not Legit Proof', prefix: 'notlegit', categoryId: NOT_LEGIT_TICKET_CATEGORY_ID, emoji: '❌', color: COLOR_RED },
 };
+
+// ===== Rules =====
+const RULES_TEXT =
+  "**1. PAYMENTS**\n> • Only use the official payment methods provided by Zenith.\n> • Double-check your order and total price before paying.\n> • Fake payment proofs and fraud are strictly prohibited.\n> • Never send payments to unofficial accounts.\n\n" +
+  "**2. ORDERS**\n> • Check your order carefully before completing your purchase.\n> • Always provide accurate information.\n> • Delivery times may vary depending on the product.\n> • Open a ticket if you experience any issues with your order.\n\n" +
+  "**3. REFUNDS**\n> • Submit all refund requests through a ticket.\n> • Refund requests are handled according to applicable policies and laws.\n> • All applicable consumer rights remain valid.\n\n" +
+  "**4. FRAUD AND ABUSE**\n> • Scamming, fraud, and abuse are strictly prohibited.\n> • False claims regarding payments or orders are not allowed.\n\n" +
+  "**5. CUSTOMER SUPPORT**\n> • Open a ticket if you need assistance.\n> • Do not spam tickets or create multiple tickets for the same issue.\n> • Remain respectful towards staff members.\n> • Never share your passwords or sensitive information.\n\n" +
+  "**6. ADVERTISING**\n> • Advertising other shops without permission is prohibited.\n> • Spam and unsolicited promotional messages are not allowed.\n> • Advertising is only permitted in designated channels.\n\n" +
+  "*Thank you for choosing Zenith.*";
 
 // ===== HTTP =====
 http.createServer((req, res) => { res.writeHead(200); res.end('ok'); }).listen(PORT);
@@ -70,6 +89,7 @@ const client = new Client({
   presence: { status: 'online', activities: [{ name: 'Zenith', type: 3 }] },
 });
 const reviews = new Map();
+const pendingPurchases = new Map();
 
 // ===== Plans =====
 const PLANS = {
@@ -211,6 +231,7 @@ async function readGist() {
     paymentMethodsMessageId: parsed.paymentMethodsMessageId || null,
     products: parsed.products || {},
     productPanelMessageId: parsed.productPanelMessageId || null,
+    rulesMessageId: parsed.rulesMessageId || null,
   };
 }
 async function writeGist(data) {
@@ -503,17 +524,18 @@ async function clearBotMessages(channel) {
   }
 }
 
-// ===== Overview =====
+// ===== Overview (plan-based) =====
 const getOverviewMessageId = async () => (await readGist()).overzichtMessageId;
 async function setOverviewMessageId(id) { const d = await readGist(); d.overzichtMessageId = id; await writeGist(d); }
 
 async function buildOverviewEmbed() {
   const purchases = await getPurchases();
-  const perProduct = {};
+  const perPlan = {};
+  for (const plan of Object.keys(PLANS)) perPlan[plan] = [];
   for (const p of purchases) {
-    const name = p.productName || 'Unknown';
-    if (!perProduct[name]) perProduct[name] = [];
-    perProduct[name].push(p);
+    const planName = p.plan === 'lifetime' ? 'lifetime' : p.plan;
+    if (!perPlan[planName]) perPlan[planName] = [];
+    perPlan[planName].push(p);
   }
   const embed = new EmbedBuilder()
     .setTitle('Active Purchases')
@@ -521,23 +543,21 @@ async function buildOverviewEmbed() {
     .setThumbnail(LOGO)
     .setFooter({ text: 'Zenith', iconURL: LOGO })
     .setTimestamp();
-  if (Object.keys(perProduct).length === 0) {
-    embed.setDescription('*No active purchases.*');
-    return embed;
-  }
-  for (const [productName, list] of Object.entries(perProduct)) {
-    let value = '';
+  for (const plan of ['1 week', '1 month', 'lifetime']) {
+    const list = perPlan[plan] || [];
+    let value = list.length === 0 ? '*None*' : '';
     for (const p of list) {
       const remaining = formatRemaining(p.eindTijd);
-      const key = p.key || 'no key';
-      const plan = p.plan === 'lifetime' ? 'Lifetime' : p.plan;
-      value += `<@${p.userId}> — ${plan} — ${remaining} — \`${key}\`\n`;
+      const key = p.key ? p.key : 'no key';
+      const prod = p.productName ? ` [${p.productName}]` : '';
+      value += `<@${p.userId}>${prod} — ${remaining} — \`${key}\`\n`;
     }
     if (value.length > 1024) value = value.slice(0, 1020) + '...';
-    embed.addFields({ name: `**${productName}** (${list.length})`, value, inline: false });
+    embed.addFields({ name: `**${plan}** (${list.length})`, value, inline: false });
   }
   return embed;
 }
+
 async function updateOverview() {
   try {
     const channel = await client.channels.fetch(PURCHASE_LOG_CHANNEL_ID);
@@ -623,7 +643,7 @@ async function updateProductPanel() {
   } catch (e) { console.error('updateProductPanel:', e.message); }
 }
 
-// ===== Payment Methods =====
+// ===== Payment Methods (geen emoji) =====
 const getPaymentMethodsMessageId = async () => (await readGist()).paymentMethodsMessageId;
 async function setPaymentMethodsMessageId(id) { const d = await readGist(); d.paymentMethodsMessageId = id; await writeGist(d); }
 
@@ -632,19 +652,15 @@ async function setupPaymentMethods() {
     const channel = await client.channels.fetch(PAYMENT_METHODS_CHANNEL_ID).catch(() => null);
     if (!channel) return;
     const embed = new EmbedBuilder()
-      .setTitle('💳 Payment Methods')
-      .setColor(COLOR_LIGHT_BLUE)
-      .setThumbnail(LOGO)
+      .setTitle('Payment Methods')
+      .setColor(COLOR_DARK)
       .setDescription(
-        `→   <:ideal:1564724669129560174>  **(iDeal)**\n` +
-        `→  <:paypal:1564726369219510354> **(PayPal)**\n` +
-        `→  <:ltc:1564724536979759124>  **(Cryptocurrencies, LTC) = 10% Off!**\n` +
-        `→  <:bank:1564724257164886078>  **(Bank Transfer)**\n\n` +
-        `-# Have a suggestion for a new payment method? Open a ticket and let us know.`
-      )
-      .setFooter({ text: 'Zenith', iconURL: LOGO })
-      .setTimestamp();
-
+        `→   **(iDeal)**\n` +
+        `→  **(PayPal)**\n` +
+        `→  **(Cryptocurrencies, LTC) = 10% Off!**\n` +
+        `→  **(Bank Transfer)**\n\n` +
+        `-# Please share your suggestions for new payment methods we can add.`
+      );
     const messageId = await getPaymentMethodsMessageId();
     if (messageId) {
       const msg = await channel.messages.fetch(messageId).catch(() => null);
@@ -657,6 +673,70 @@ async function setupPaymentMethods() {
     const newMsg = await channel.send({ embeds: [embed] });
     await setPaymentMethodsMessageId(newMsg.id);
   } catch (e) { console.error('setupPaymentMethods:', e.message); }
+}
+
+// ===== Rules + Verify (vervangt verify kanaal) =====
+const getRulesMessageId = async () => (await readGist()).rulesMessageId;
+async function setRulesMessageId(id) { const d = await readGist(); d.rulesMessageId = id; await writeGist(d); }
+
+async function getVerifiedCount() {
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    await guild.members.fetch();
+    const role = guild.roles.cache.get(VERIFY_ROLE_ID);
+    return role ? role.members.size : 0;
+  } catch (e) { return 0; }
+}
+
+async function updateRulesMessage() {
+  try {
+    const channel = await client.channels.fetch(RULES_CHANNEL_ID).catch(() => null);
+    if (!channel) return;
+    const messageId = await getRulesMessageId();
+    if (!messageId) return setupRules();
+    const verifiedCount = await getVerifiedCount();
+    const msg = await channel.messages.fetch(messageId).catch(() => null);
+    if (!msg) return setupRules();
+    const embed = new EmbedBuilder()
+      .setAuthor({ name: 'ZENITH RULES', iconURL: LOGO })
+      .setColor(COLOR_DARK)
+      .setDescription(`Welcome to Zenith. Please read the rules carefully before placing an order.\n\n${RULES_TEXT}`)
+      .setFooter({ text: 'Zenith', iconURL: LOGO })
+      .setThumbnail(LOGO)
+      .setTimestamp();
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('verify_accept_rules')
+        .setLabel(`✅ ${verifiedCount}`)
+        .setStyle(ButtonStyle.Secondary)
+    );
+    await msg.edit({ embeds: [embed], components: [row] });
+  } catch (e) { console.error('updateRulesMessage:', e.message); }
+}
+
+async function setupRules() {
+  try {
+    const channel = await client.channels.fetch(RULES_CHANNEL_ID).catch(() => null);
+    if (!channel) return console.error('Rules channel not found');
+    await clearBotMessages(channel);
+    const verifiedCount = await getVerifiedCount();
+    const embed = new EmbedBuilder()
+      .setAuthor({ name: 'ZENITH RULES', iconURL: LOGO })
+      .setColor(COLOR_DARK)
+      .setDescription(`Welcome to Zenith. Please read the rules carefully before placing an order.\n\n${RULES_TEXT}`)
+      .setFooter({ text: 'Zenith', iconURL: LOGO })
+      .setThumbnail(LOGO)
+      .setTimestamp();
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('verify_accept_rules')
+        .setLabel(`✅ ${verifiedCount}`)
+        .setStyle(ButtonStyle.Secondary)
+    );
+    const newMsg = await channel.send({ embeds: [embed], components: [row] });
+    await setRulesMessageId(newMsg.id);
+    console.log('Rules message placed');
+  } catch (e) { console.error('setupRules:', e.message); }
 }
 
 // ===== Giveaway =====
@@ -899,23 +979,6 @@ async function closeTicket(channel, closerId) {
   return { ok: true };
 }
 
-// ===== Verify =====
-async function setupVerify() {
-  try {
-    const channel = await client.channels.fetch(VERIFY_CHANNEL_ID);
-    if (!channel) return;
-    await clearBotMessages(channel);
-    const embed = new EmbedBuilder()
-      .setTitle('Verify').setColor(COLOR_LIGHT_BLUE)
-      .setDescription('Click below to gain access to the server.')
-      .setThumbnail(LOGO).setFooter({ text: 'Zenith', iconURL: LOGO });
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('verify_button').setLabel('Verify').setEmoji('✅').setStyle(ButtonStyle.Success)
-    );
-    await channel.send({ embeds: [embed], components: [row] });
-  } catch (e) { console.error('setupVerify:', e.message); }
-}
-
 // ===== Pricing =====
 async function setupPricing() {
   try {
@@ -960,9 +1023,9 @@ async function setupTicketPanel() {
 // ===== Ticket storage =====
 const getTickets = async () => (await readGist()).tickets;
 async function saveTickets(t) { const d = await readGist(); d.tickets = t; await writeGist(d); }
-async function addTicket(channelId, userId, categoryKey) {
+async function addTicket(channelId, userId, categoryKey, extra = {}) {
   const t = await getTickets();
-  t[channelId] = { userId, categorie: categoryKey, gestart: Date.now(), extraUsers: [] };
+  t[channelId] = { userId, categorie: categoryKey, gestart: Date.now(), extraUsers: [], ...extra };
   await saveTickets(t);
 }
 async function removeTicket(channelId) {
@@ -999,6 +1062,51 @@ function notLegitReviewRow() {
     new ButtonBuilder().setCustomId('notlegit_positive').setLabel('Positive').setEmoji('✅').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId('notlegit_false').setLabel('False').setEmoji('❌').setStyle(ButtonStyle.Danger)
   );
+}
+
+// ===== Create ticket helper (voor dropdowns/modals) =====
+async function createTicket(guild, user, categoryKey, extraData = {}) {
+  const cat = TICKET_CATEGORIES[categoryKey];
+  if (!cat) throw new Error('Unknown category');
+  const tickets = await getTickets();
+  if (Object.values(tickets).find(t => t.userId === user.id)) throw new Error('You already have an open ticket.');
+
+  const channelName = `${cat.prefix}-${user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 90);
+  const ticketChannel = await guild.channels.create({
+    name: channelName, type: ChannelType.GuildText, parent: cat.categoryId,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
+      { id: TICKET_SUPPORT_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] },
+      { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] },
+    ],
+    topic: `Ticket from ${user.tag} — ${cat.name}`,
+  });
+
+  await addTicket(ticketChannel.id, user.id, categoryKey, extraData);
+
+  const embed = new EmbedBuilder()
+    .setTitle(cat.name).setColor(cat.color)
+    .setDescription(`<@${user.id}> — describe your question below.`)
+    .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+
+  // Extra velden tonen indien purchase
+  if (extraData.productName) {
+    embed.addFields(
+      { name: 'Product', value: extraData.productName, inline: true },
+      { name: 'Plan', value: extraData.plan || '?', inline: true },
+      { name: 'Payment', value: extraData.paymentName || '?', inline: true }
+    );
+  }
+  if (extraData.question) {
+    embed.addFields({ name: 'Question', value: extraData.question, inline: false });
+  }
+
+  const closeRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+  );
+  await ticketChannel.send({ content: `<@${user.id}> <@&${TICKET_SUPPORT_ROLE_ID}>`, embeds: [embed], components: [closeRow] });
+  return ticketChannel;
 }
 
 // ===== Autocomplete =====
@@ -1365,6 +1473,7 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Select menus =====
   if (i.isStringSelectMenu()) {
+    // Review product
     if (i.customId === 'review_product_select') {
       const productName = i.values[0];
       const existingReview = reviews.get(i.user.id);
@@ -1376,39 +1485,99 @@ client.on('interactionCreate', async (i) => {
       return i.update({ embeds: [embed], components: [starRow(null), submitRow()] });
     }
 
+    // Ticket category
     if (i.customId === 'ticket_category_select') {
-      await i.deferReply({ ephemeral: true });
       const choice = i.values[0];
+      if (choice === 'purchase') {
+        // Start 3-step dropdown flow
+        await i.deferReply({ ephemeral: true });
+        const products = await getProducts();
+        const productNames = Object.keys(products);
+        if (productNames.length === 0) return i.editReply({ content: '⚠️ No products available. Please contact staff.' });
+        pendingPurchases.set(i.user.id, { productName: null, plan: null, payment: null });
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId('purchase_product_select')
+          .setPlaceholder('Select a product')
+          .addOptions(productNames.slice(0, 25).map(p => ({ label: p, value: p })));
+        return i.editReply({
+          embeds: [new EmbedBuilder().setTitle('🛒 Purchase').setDescription('Which product do you want to buy?').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)],
+          components: [new ActionRowBuilder().addComponents(menu)]
+        });
+      }
+
+      // For support & bug: open modal
       const cat = TICKET_CATEGORIES[choice];
-      if (!cat) return i.editReply({ content: 'Unknown category.' });
+      if (!cat) return i.reply({ content: 'Unknown category.', ephemeral: true });
+      const modal = new ModalBuilder().setCustomId(`modal_create_ticket_${choice}`).setTitle(`${cat.name} Ticket`);
+      const input = new TextInputBuilder()
+        .setCustomId('question_answer')
+        .setLabel(choice === 'support' ? 'How can we help you?' : 'Describe the bug')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return i.showModal(modal);
+    }
+
+    // Purchase step 1: product
+    if (i.customId === 'purchase_product_select') {
+      const data = pendingPurchases.get(i.user.id);
+      if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
+      data.productName = i.values[0];
+      const planMenu = new StringSelectMenuBuilder()
+        .setCustomId('purchase_plan_select')
+        .setPlaceholder('Select a plan')
+        .addOptions([
+          { label: '1 week', value: '1 week' },
+          { label: '1 month', value: '1 month' },
+          { label: 'Lifetime', value: 'lifetime' },
+        ]);
+      return i.update({
+        embeds: [new EmbedBuilder().setTitle('🛒 Purchase').setDescription(`**Product:** ${data.productName}\n\nWhich plan do you want?`).setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)],
+        components: [new ActionRowBuilder().addComponents(planMenu)]
+      });
+    }
+
+    // Purchase step 2: plan
+    if (i.customId === 'purchase_plan_select') {
+      const data = pendingPurchases.get(i.user.id);
+      if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
+      data.plan = i.values[0];
+      const payMenu = new StringSelectMenuBuilder()
+        .setCustomId('purchase_payment_select')
+        .setPlaceholder('Select a payment method')
+        .addOptions(Object.entries(PAYMENT_METHODS).map(([key, name]) => ({ label: name, value: key })));
+      return i.update({
+        embeds: [new EmbedBuilder().setTitle('🛒 Purchase')
+          .setDescription(`**Product:** ${data.productName}\n**Plan:** ${data.plan}\n\nWhich payment method do you want to use?`)
+          .setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)],
+        components: [new ActionRowBuilder().addComponents(payMenu)]
+      });
+    }
+
+    // Purchase step 3: payment
+    if (i.customId === 'purchase_payment_select') {
+      const data = pendingPurchases.get(i.user.id);
+      if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
+      data.payment = i.values[0];
+      const paymentName = PAYMENT_METHODS[data.payment];
+      await i.deferUpdate();
       try {
         const guild = await client.guilds.fetch(GUILD_ID);
-        const tickets = await getTickets();
-        if (Object.values(tickets).find(t => t.userId === i.user.id)) return i.editReply({ content: `You already have an open ticket.` });
-        const channelName = `${cat.prefix}-${i.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '');
-        const ticketChannel = await guild.channels.create({
-          name: channelName, type: ChannelType.GuildText, parent: cat.categoryId,
-          permissionOverwrites: [
-            { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: i.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
-            { id: TICKET_SUPPORT_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] },
-            { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] },
-          ],
-          topic: `Ticket from ${i.user.tag} — ${cat.name}`,
+        const ticketChannel = await createTicket(guild, i.user, 'purchase', {
+          productName: data.productName,
+          plan: data.plan,
+          paymentName,
         });
-        await addTicket(ticketChannel.id, i.user.id, choice);
-        const embed = new EmbedBuilder().setTitle(cat.name).setColor(cat.color)
-          .setDescription(`<@${i.user.id}> — describe your question below.`)
-          .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
-        const closeRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
-        );
-        await ticketChannel.send({ content: `<@${i.user.id}> <@&${TICKET_SUPPORT_ROLE_ID}>`, embeds: [embed], components: [closeRow] });
-        await i.editReply({ content: `Ticket created: <#${ticketChannel.id}>` });
-      } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
+        pendingPurchases.delete(i.user.id);
+        await i.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>`, embeds: [], components: [] });
+      } catch (e) {
+        pendingPurchases.delete(i.user.id);
+        await i.editReply({ content: `❌ Error: ${e.message}`, embeds: [], components: [] });
+      }
       return;
     }
 
+    // Product remove
     if (i.customId === 'product_remove_select') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const productName = i.values[0];
@@ -1423,6 +1592,7 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Modals =====
   if (i.isModalSubmit()) {
+    // Product add
     if (i.customId === 'product_add_modal') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const name = i.fields.getTextInputValue('product_name').trim();
@@ -1441,16 +1611,33 @@ client.on('interactionCreate', async (i) => {
         return i.reply({ content: `✅ Product **${name}** added with role <@&${roleId}>.`, ephemeral: true });
       } catch (e) { return i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
     }
+
+    // Ticket creation via modal (support / bug)
+    if (i.customId.startsWith('modal_create_ticket_')) {
+      const categoryKey = i.customId.replace('modal_create_ticket_', '');
+      const question = i.fields.getTextInputValue('question_answer');
+      await i.deferReply({ ephemeral: true });
+      try {
+        const guild = await client.guilds.fetch(GUILD_ID);
+        const ticketChannel = await createTicket(guild, i.user, categoryKey, { question });
+        await i.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>` });
+      } catch (e) {
+        await i.editReply({ content: `❌ Error: ${e.message}` });
+      }
+      return;
+    }
   }
 
   // ===== Buttons =====
   if (i.isButton()) {
-    if (i.customId === 'verify_button') {
+    // Rules accept
+    if (i.customId === 'verify_accept_rules') {
       try {
-        if (i.member.roles.cache.has(VERIFY_ROLE_ID)) return i.reply({ content: 'You are already verified.', ephemeral: true });
-        await i.member.roles.add(VERIFY_ROLE_ID, 'Verified');
-        await i.reply({ content: '✅ You are verified! Welcome to Zenith.', ephemeral: true });
-      } catch (e) { await i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
+        if (i.member.roles.cache.has(VERIFY_ROLE_ID)) return i.reply({ content: '❌ You are already verified!', ephemeral: true });
+        await i.member.roles.add(VERIFY_ROLE_ID);
+        await i.reply({ content: '✅ You have accepted the rules and are now verified!', ephemeral: true });
+        await updateRulesMessage();
+      } catch (e) { await i.reply({ content: `❌ Error: ${e.message}`, ephemeral: true }); }
       return;
     }
 
@@ -1638,7 +1825,7 @@ client.on('guildMemberAdd', async (member) => {
       .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
       .setDescription(
         `Hey <@${member.id}>, welcome to **Zenith**! 🎉\n\n` +
-        `We're glad to have you here. Make sure to read the rules in <#${VERIFY_CHANNEL_ID}> and verify to get access.\n\n` +
+        `We're glad to have you here. Make sure to read the rules in <#${RULES_CHANNEL_ID}> and accept them to get access.\n\n` +
         `> 🛒 Check out our products in <#${PRICING_CHANNEL_ID}>\n` +
         `> 🎫 Open a ticket if you need help\n` +
         `> 📦 View our purchase log in <#${PURCHASE_LOG_CHANNEL_ID}>`
@@ -1647,6 +1834,7 @@ client.on('guildMemberAdd', async (member) => {
       .setTimestamp();
     await channel.send({ content: `<@${member.id}>`, embeds: [embed] });
   } catch (e) { console.error('Welcome:', e.message); }
+  await updateRulesMessage();
 });
 
 // ===== Member leave =====
@@ -1659,6 +1847,14 @@ client.on('guildMemberRemove', async (member) => {
     await savePurchases(purchases.filter(p => p.userId !== member.id));
     await updateOverview();
   } catch (e) {}
+});
+
+// ===== Role update (verify count) =====
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (newMember.guild.id !== GUILD_ID) return;
+  const hadRole = oldMember.roles.cache.has(VERIFY_ROLE_ID);
+  const hasRole = newMember.roles.cache.has(VERIFY_ROLE_ID);
+  if (hadRole !== hasRole) await updateRulesMessage();
 });
 
 // ===== Channel delete =====
@@ -1681,7 +1877,7 @@ client.once('ready', async () => {
   await updateOverview();
   startOverviewInterval();
 
-  await setupVerify();
+  await setupRules();
   await setupPricing();
   await setupTicketPanel();
   await setupLegitPoll();
