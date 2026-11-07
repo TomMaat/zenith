@@ -589,7 +589,6 @@ function buildProductPanelEmbed(products) {
   }
   return embed;
 }
-
 function buildProductPanelRows() {
   return [
     new ActionRowBuilder().addComponents(
@@ -598,7 +597,6 @@ function buildProductPanelRows() {
     ),
   ];
 }
-
 async function setupProductPanel() {
   try {
     const channel = await client.channels.fetch(PRODUCT_PANEL_CHANNEL_ID).catch(() => null);
@@ -612,7 +610,6 @@ async function setupProductPanel() {
     console.log('Product panel placed');
   } catch (e) { console.error('setupProductPanel:', e.message); }
 }
-
 async function updateProductPanel() {
   try {
     const channel = await client.channels.fetch(PRODUCT_PANEL_CHANNEL_ID).catch(() => null);
@@ -639,13 +636,11 @@ async function setupPaymentMethods() {
       .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(LOGO)
       .setDescription(
-        `Here are the payment methods we accept at **Zenith**:\n\n` +
-        `> 🏦 **iDeal**\n` +
-        `> 💸 **Tikkie**\n` +
-        `> 💰 **PayPal**\n` +
-        `> 🪙 **Crypto (LTC) — 10% Off!**\n` +
-        `> 🏛️ **Bank Transfer**\n\n` +
-        `-# Have a suggestion? Open a ticket and let us know.`
+        `→   <:ideal:1564724669129560174>  **(iDeal)**\n` +
+        `→  <:paypal:1564726369219510354> **(PayPal)**\n` +
+        `→  <:ltc:1564724536979759124>  **(Cryptocurrencies, LTC) = 10% Off!**\n` +
+        `→  <:bank:1564724257164886078>  **(Bank Transfer)**\n\n` +
+        `-# Have a suggestion for a new payment method? Open a ticket and let us know.`
       )
       .setFooter({ text: 'Zenith', iconURL: LOGO })
       .setTimestamp();
@@ -933,7 +928,7 @@ async function setupPricing() {
       .addFields(
         { name: '💰 Pricing', value: '```\n1 Week    →  €7.50\n1 Month   →  €20.00\nLifetime  →  €60.00\n```', inline: false },
         { name: '🛡️ Product', value: '> • External Cheat\n> • Advanced bypass\n> • Daily Updates\n> • Easy to use interface\n> • 24/7 Support', inline: false },
-        { name: '👥 Group Deals', value: '```\nDuo    →  €30 per person\nTrio   →  €20 per person\nSquad  →  €15 per person\n```', inline: false }
+        { name: '👥 Group Deals', value: '```\nDuo    →  €35 per person\nTrio   →  €25 per person\nSquad  →  €20 per person\n```', inline: false }
       )
       .setFooter({ text: 'Zenith', iconURL: LOGO });
     await channel.send({ embeds: [embed] });
@@ -1413,6 +1408,17 @@ client.on('interactionCreate', async (i) => {
       } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
       return;
     }
+
+    if (i.customId === 'product_remove_select') {
+      if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
+      const productName = i.values[0];
+      const products = await getProducts();
+      if (!products[productName]) return i.update({ content: 'Product not found.', components: [] });
+      delete products[productName];
+      await saveProducts(products);
+      await updateProductPanel();
+      return i.update({ content: `✅ Product **${productName}** removed.`, components: [] });
+    }
   }
 
   // ===== Modals =====
@@ -1617,18 +1623,6 @@ client.on('interactionCreate', async (i) => {
       await i.channel.send({ embeds: [embed] });
       reviews.delete(i.user.id);
     }
-  }
-
-  // ===== product remove select =====
-  if (i.isStringSelectMenu() && i.customId === 'product_remove_select') {
-    if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
-    const productName = i.values[0];
-    const products = await getProducts();
-    if (!products[productName]) return i.update({ content: 'Product not found.', components: [] });
-    delete products[productName];
-    await saveProducts(products);
-    await updateProductPanel();
-    return i.update({ content: `✅ Product **${productName}** removed.`, components: [] });
   }
 });
 
