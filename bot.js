@@ -43,6 +43,7 @@ const VERIFY_ROLE_ID = '1564415134171013154';
 const PRICING_CHANNEL_ID = '1568415867677712576';
 const TICKET_PANEL_CHANNEL_ID = '1564415332737884233';
 const TICKET_SUPPORT_ROLE_ID = '1564415128659824731';
+const TICKET_TAG_ROLE_ID = '1564638227204149258';
 const TICKET_TRANSCRIPT_CHANNEL_ID = '1568756706371051531';
 const LEGIT_CHANNEL_ID = '1568417066732490802';
 const VOTE_LOG_CHANNEL_ID = '1555729409535774833';
@@ -133,7 +134,7 @@ function formatShortDuration(ms) {
   return `${Math.round(ms / 1000)}s`;
 }
 
-// Helper: haal emoji-ID uit "<:naam:ID>" string
+// Helper: extract emoji ID from "<:naam:ID>"
 function emojiToId(emojiStr) {
   const match = emojiStr.match(/:(\d+)>/);
   return match ? match[1] : null;
@@ -650,7 +651,7 @@ async function updateProductPanel() {
   } catch (e) { console.error('updateProductPanel:', e.message); }
 }
 
-// ===== Payment Methods (met emoji's + Tikkie) =====
+// ===== Payment Methods =====
 const getPaymentMethodsMessageId = async () => (await readGist()).paymentMethodsMessageId;
 async function setPaymentMethodsMessageId(id) { const d = await readGist(); d.paymentMethodsMessageId = id; await writeGist(d); }
 
@@ -1112,7 +1113,7 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
   const closeRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
   );
-  await ticketChannel.send({ content: `<@${user.id}> <@&${TICKET_SUPPORT_ROLE_ID}>`, embeds: [embed], components: [closeRow] });
+  await ticketChannel.send({ content: `<@${user.id}> <@&${TICKET_TAG_ROLE_ID}>`, embeds: [embed], components: [closeRow] });
   return ticketChannel;
 }
 
@@ -1495,6 +1496,8 @@ client.on('interactionCreate', async (i) => {
     // Ticket category
     if (i.customId === 'ticket_category_select') {
       const choice = i.values[0];
+
+      // Purchase → 3-staps dropdown flow
       if (choice === 'purchase') {
         await i.deferReply({ ephemeral: true });
         const products = await getProducts();
@@ -1511,8 +1514,15 @@ client.on('interactionCreate', async (i) => {
         });
       }
 
+      // Support / Bug → modal direct openen
       const cat = TICKET_CATEGORIES[choice];
       if (!cat) return i.reply({ content: 'Unknown category.', ephemeral: true });
+
+      const tickets = await getTickets();
+      if (Object.values(tickets).find(t => t.userId === i.user.id)) {
+        return i.reply({ content: '❌ You already have an open ticket.', ephemeral: true });
+      }
+
       const modal = new ModalBuilder().setCustomId(`modal_create_ticket_${choice}`).setTitle(`${cat.name} Ticket`);
       const input = new TextInputBuilder()
         .setCustomId('question_answer')
@@ -1718,7 +1728,7 @@ client.on('interactionCreate', async (i) => {
         const closeRow = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
         );
-        await ticketChannel.send({ content: `<@${i.user.id}> <@&${TICKET_SUPPORT_ROLE_ID}>`, embeds: [promptEmbed], components: [notLegitReviewRow(), closeRow] });
+        await ticketChannel.send({ content: `<@${i.user.id}> <@&${TICKET_TAG_ROLE_ID}>`, embeds: [promptEmbed], components: [notLegitReviewRow(), closeRow] });
         await i.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>` });
       } catch (e) { try { await i.editReply({ content: `Error: ${e.message}` }); } catch (_) {} }
       return;
