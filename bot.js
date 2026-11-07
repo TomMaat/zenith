@@ -995,7 +995,7 @@ async function setupPricing() {
     if (!channel) return;
     await clearBotMessages(channel);
     const embed = new EmbedBuilder()
-      .setTitle('Zenith Private').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
+      .setTitle('Zenith Custom Bypass').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
       .setDescription('> Premium external cheat with advanced bypass.\n> ⚡ Fast delivery • 🔒 Safe • 🕐 24/7 Support')
       .addFields(
         { name: '💰 Pricing', value: '```\n1 Week    →  €7.50\n1 Month   →  €20.00\nLifetime  →  €60.00\n```', inline: false },
