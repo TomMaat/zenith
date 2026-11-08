@@ -1,20 +1,9 @@
 require('dotenv').config();
 const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  StringSelectMenuBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ChannelType,
-  PermissionFlagsBits,
-  AttachmentBuilder,
-  REST,
-  Routes,
+  Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
+  ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder,
+  TextInputStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder,
+  REST, Routes,
 } = require('discord.js');
 const http = require('http');
 
@@ -33,9 +22,9 @@ const COLOR_GOLD = 0xffd700;
 const COLOR_DARK = 0x2b2b2b;
 
 // ===== Settings =====
-const REVIEW_CHANNEL_ID = '1568416985832890438';
-const REQUIRED_ROLE_ID = '1564635023787950090';
-const PURCHASE_ROLE_ID = '1564415128659824731';
+const CUSTOMER_ROLE_ID = '1564635023787950090';   // altijd na aankoop
+const REVIEW_CHANNEL_ID = '1568416985832890438';   // reviews komen hier
+const PURCHASE_ROLE_ID = '1564415128659824731';    // staff die /purchase mag
 const PURCHASE_LOG_CHANNEL_ID = '1564761373026681205';
 const SUGGESTIE_CHANNEL_ID = '1568755542799945909';
 const RULES_CHANNEL_ID = '1564632375336505344';
@@ -52,7 +41,6 @@ const NOT_LEGIT_TICKET_CATEGORY_ID = '1568757119774097559';
 const PAYMENT_METHODS_CHANNEL_ID = '1568415315690258493';
 const PRODUCT_PANEL_CHANNEL_ID = '1568762246270681129';
 const WELCOME_CHANNEL_ID = '1565405396527489134';
-const PRODUCT = 'Zenith Custom Bypass';
 const STATUS_INTERVAL = 8000;
 
 // ===== Payment Methods =====
@@ -90,7 +78,6 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
   presence: { status: 'online', activities: [{ name: 'Zenith', type: 3 }] },
 });
-const reviews = new Map();
 const pendingPurchases = new Map();
 
 // ===== Plans =====
@@ -133,8 +120,6 @@ function formatShortDuration(ms) {
   if (ms >= 60000) return `${Math.round(ms / 60000)}m`;
   return `${Math.round(ms / 1000)}s`;
 }
-
-// Helper: extract emoji ID from "<:naam:ID>"
 function emojiToId(emojiStr) {
   const match = emojiStr.match(/:(\d+)>/);
   return match ? match[1] : null;
@@ -143,13 +128,8 @@ function emojiToId(emojiStr) {
 // ===== Commands =====
 const commands = [
   {
-    name: 'review',
-    description: 'Write a review for Zenith',
-    options: [{ name: 'extra', description: 'Tell us briefly about your experience', type: 3, required: true }],
-  },
-  {
     name: 'purchase',
-    description: 'Assign a product role to a user with a license key',
+    description: 'Assign a product role + customer role to a user with a license key',
     options: [
       { name: 'user', description: 'The user', type: 6, required: true },
       { name: 'product', description: 'Select the product', type: 3, required: true, autocomplete: true },
@@ -164,6 +144,7 @@ const commands = [
       { name: 'key', description: 'The key/license for the customer', type: 3, required: true },
     ],
   },
+  { name: 'delivered', description: 'Mark this purchase ticket as delivered and ask the customer for a review' },
   {
     name: 'removelicense',
     description: 'Remove the active license of a user',
@@ -224,7 +205,7 @@ async function readGist() {
   const data = await res.json();
   const parsed = JSON.parse(data.files['zenith.json'].content);
   return {
-    counter: parsed.counter || 0,
+    reviewCounter: parsed.reviewCounter || 0,
     purchases: parsed.purchases || [],
     suggestions: parsed.suggestions || {},
     tickets: parsed.tickets || {},
@@ -250,8 +231,10 @@ async function writeGist(data) {
   });
   if (!res.ok) throw new Error(`Gist write failed: ${res.status}`);
 }
-const readCounter = async () => (await readGist()).counter;
-async function writeCounter(n) { const d = await readGist(); d.counter = n; await writeGist(d); }
+
+// Review teller
+const getReviewCounter = async () => (await readGist()).reviewCounter;
+async function writeReviewCounter(n) { const d = await readGist(); d.reviewCounter = n; await writeGist(d); }
 
 // ===== Producten =====
 const getProducts = async () => (await readGist()).products;
@@ -453,14 +436,14 @@ async function scanChannel(channel) {
   }
   return highest;
 }
-async function nextNumber(channel) {
-  try { return (await readCounter()) + 1; }
+async function nextReviewNumber(channel) {
+  try { return (await getReviewCounter()) + 1; }
   catch (e) { return (await scanChannel(channel)) + 1; }
 }
 
 // ===== Status =====
 let statusToggle = false;
-let cachedCounter = 0;
+let cachedReviewCounter = 0;
 async function getMemberCount() {
   try { const g = await client.guilds.fetch({ guild: GUILD_ID, force: true }); return g.memberCount; }
   catch (e) { return 0; }
@@ -471,12 +454,12 @@ async function updateStatus() {
       const m = await getMemberCount();
       client.user.setActivity(`${m} Members`, { type: 3 });
     } else {
-      client.user.setActivity(`${cachedCounter} Reviews`, { type: 3 });
+      client.user.setActivity(`${cachedReviewCounter} Reviews`, { type: 3 });
     }
     statusToggle = !statusToggle;
   } catch (e) {}
 }
-async function refreshCounterCache() { try { cachedCounter = await readCounter(); } catch (e) {} }
+async function refreshCounterCache() { try { cachedReviewCounter = await getReviewCounter(); } catch (e) {} }
 function startStatusInterval() {
   refreshCounterCache();
   updateStatus();
@@ -532,7 +515,7 @@ async function clearBotMessages(channel) {
   }
 }
 
-// ===== Overview (plan-based) =====
+// ===== Overview =====
 const getOverviewMessageId = async () => (await readGist()).overzichtMessageId;
 async function setOverviewMessageId(id) { const d = await readGist(); d.overzichtMessageId = id; await writeGist(d); }
 
@@ -688,7 +671,6 @@ async function setupPaymentMethods() {
 const getRulesMessageId = async () => (await readGist()).rulesMessageId;
 async function setRulesMessageId(id) { const d = await readGist(); d.rulesMessageId = id; await writeGist(d); }
 
-// FIX 1: robuustere verified count met force fetch + fallback
 async function getVerifiedCount() {
   try {
     const guild = await client.guilds.fetch({ guild: GUILD_ID, force: true });
@@ -700,10 +682,7 @@ async function getVerifiedCount() {
     let count = 0;
     guild.members.cache.forEach(m => { if (m.roles.cache.has(VERIFY_ROLE_ID)) count++; });
     return count;
-  } catch (e) {
-    console.error('getVerifiedCount error:', e.message);
-    return 0;
-  }
+  } catch (e) { console.error('getVerifiedCount error:', e.message); return 0; }
 }
 
 async function updateRulesMessage() {
@@ -723,10 +702,7 @@ async function updateRulesMessage() {
       .setThumbnail(LOGO)
       .setTimestamp();
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('verify_accept_rules')
-        .setLabel(`✅ ${verifiedCount}`)
-        .setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('verify_accept_rules').setLabel(`✅ ${verifiedCount}`).setStyle(ButtonStyle.Secondary)
     );
     await msg.edit({ embeds: [embed], components: [row] });
   } catch (e) { console.error('updateRulesMessage:', e.message); }
@@ -746,10 +722,7 @@ async function setupRules() {
       .setThumbnail(LOGO)
       .setTimestamp();
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('verify_accept_rules')
-        .setLabel(`✅ ${verifiedCount}`)
-        .setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('verify_accept_rules').setLabel(`✅ ${verifiedCount}`).setStyle(ButtonStyle.Secondary)
     );
     const newMsg = await channel.send({ embeds: [embed], components: [row] });
     await setRulesMessageId(newMsg.id);
@@ -765,9 +738,7 @@ async function saveLastGiveaways(l) { const d = await readGist(); d.laatsteGivea
 
 function buildGiveawayEmbed(g) {
   return new EmbedBuilder()
-    .setTitle('🎉 Giveaway 🎉')
-    .setColor(COLOR_LIGHT_BLUE)
-    .setThumbnail(LOGO)
+    .setTitle('🎉 Giveaway 🎉').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
     .setDescription(`**Prize:** ${g.item}\n**Winners:** ${g.winners}\n**Ends:** <t:${Math.floor(g.eindTijd / 1000)}:R>\n\nReact with 🎉 to enter!`)
     .setFooter({ text: `Zenith • Hosted by ${g.hostTag || 'unknown'}`, iconURL: LOGO })
     .setTimestamp(g.gestart);
@@ -775,12 +746,9 @@ function buildGiveawayEmbed(g) {
 function buildGiveawayEndedEmbed(g, winners, isReroll = false) {
   const winnerText = winners.length > 0 ? winners.map(id => `<@${id}>`).join(', ') : 'No participants';
   return new EmbedBuilder()
-    .setTitle(isReroll ? '🎉 Giveaway Rerolled 🎉' : '🎉 Giveaway Ended 🎉')
-    .setColor(COLOR_LIGHT_BLUE)
-    .setThumbnail(LOGO)
+    .setTitle(isReroll ? '🎉 Giveaway Rerolled 🎉' : '🎉 Giveaway Ended 🎉').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
     .setDescription(`**Prize:** ${g.item}\n**${isReroll ? 'New winners' : 'Winners'}:** ${winnerText}\n\nCongratulations! 🎊`)
-    .setFooter({ text: 'Zenith', iconURL: LOGO })
-    .setTimestamp();
+    .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
 }
 async function pickWinners(message, amount) {
   const reaction = message.reactions.cache.get('🎉');
@@ -1060,21 +1028,6 @@ async function setNotLegitStatus(channelId, status) {
 
 // ===== Helpers =====
 function stars(n) { return '⭐'.repeat(n) + '☆'.repeat(5 - n); }
-function starRow(chosen) {
-  const row = new ActionRowBuilder();
-  for (let i = 1; i <= 5; i++) {
-    row.addComponents(new ButtonBuilder()
-      .setCustomId(`star_${i}`).setLabel(`${i} ⭐`)
-      .setStyle(chosen === i ? ButtonStyle.Success : ButtonStyle.Secondary)
-      .setDisabled(chosen !== null && chosen !== i));
-  }
-  return row;
-}
-function submitRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('submit').setLabel('Submit').setStyle(ButtonStyle.Primary)
-  );
-}
 function notLegitReviewRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('notlegit_positive').setLabel('Positive').setEmoji('✅').setStyle(ButtonStyle.Success),
@@ -1126,7 +1079,7 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
   return ticketChannel;
 }
 
-// ===== Autocomplete =====
+// ===== Interaction handler =====
 client.on('interactionCreate', async (i) => {
   if (i.isAutocomplete()) {
     try {
@@ -1139,35 +1092,6 @@ client.on('interactionCreate', async (i) => {
       await i.respond(filtered);
     } catch (e) { try { await i.respond([]); } catch (_) {} }
     return;
-  }
-
-  // ===== /review =====
-  if (i.isChatInputCommand() && i.commandName === 'review') {
-    if (i.channelId !== REVIEW_CHANNEL_ID) return i.reply({ content: `You can only post a review in <#${REVIEW_CHANNEL_ID}>.`, ephemeral: true });
-    if (!i.member.roles.cache.has(REQUIRED_ROLE_ID)) return i.reply({ content: `You need the <@&${REQUIRED_ROLE_ID}> role to post a review.`, ephemeral: true });
-
-    const purchases = (await getPurchases()).filter(p => p.userId === i.user.id);
-    if (purchases.length === 0) return i.reply({ content: 'You need to have purchased a product before you can leave a review.', ephemeral: true });
-
-    const extra = i.options.getString('extra');
-    const productNames = [...new Set(purchases.map(p => p.productName))];
-    if (productNames.length === 1) {
-      reviews.set(i.user.id, { productName: productNames[0], extra, rating: null });
-      const embed = new EmbedBuilder().setTitle('Create Review')
-        .setDescription(`**Product:** ${productNames[0]}\n\nChoose a star rating.`)
-        .setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO);
-      return i.reply({ embeds: [embed], components: [starRow(null), submitRow()], ephemeral: true });
-    }
-
-    const menu = new StringSelectMenuBuilder()
-      .setCustomId('review_product_select')
-      .setPlaceholder('Select the product you want to review')
-      .addOptions(productNames.slice(0, 25).map(p => ({ label: p, value: p })));
-    const embed = new EmbedBuilder()
-      .setTitle('Create Review')
-      .setDescription('Which product do you want to review?')
-      .setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO);
-    return i.reply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
   }
 
   // ===== /purchase =====
@@ -1191,6 +1115,7 @@ client.on('interactionCreate', async (i) => {
       const member = await guild.members.fetch(targetUser.id);
       const roleId = productData.roleId;
       if (roleId) await member.roles.add(roleId, `Purchase: ${productName} (${plan})`).catch(() => {});
+      await member.roles.add(CUSTOMER_ROLE_ID, `Purchase: ${productName} (${plan})`).catch(() => {});
       const { endTime } = await addPurchase(targetUser.id, productName, plan, key, roleId);
       await updateOverview();
       const planText = plan === 'lifetime' ? 'Lifetime' : plan;
@@ -1202,7 +1127,8 @@ client.on('interactionCreate', async (i) => {
           { name: 'Product', value: productName, inline: true },
           { name: 'Plan', value: planText, inline: true },
           { name: 'Duration', value: formatDuration(duration), inline: true },
-          { name: 'Role', value: roleId ? `<@&${roleId}>` : 'None', inline: true },
+          { name: 'Product Role', value: roleId ? `<@&${roleId}>` : 'None', inline: true },
+          { name: 'Customer Role', value: `<@&${CUSTOMER_ROLE_ID}>`, inline: true },
           { name: 'Key', value: `\`\`\`${key}\`\`\``, inline: false },
           { name: 'Expires', value: endTime === null ? 'Never (Lifetime)' : `<t:${Math.floor(endTime/1000)}:F> (<t:${Math.floor(endTime/1000)}:R>)`, inline: false }
         )
@@ -1211,11 +1137,51 @@ client.on('interactionCreate', async (i) => {
       try {
         const dmEmbed = new EmbedBuilder()
           .setTitle('Thank you for your purchase!').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
-          .setDescription(`Hey <@${targetUser.id}>,\n\nThanks for purchasing the **${planText} Plan** for **${productName}**!\n\nHere is your key:\n\`\`\`${key}\`\`\`\nKeep it safe!\n\nWant to leave a review? Use \`/review\`. 💙`)
+          .setDescription(`Hey <@${targetUser.id}>,\n\nThanks for purchasing the **${planText} Plan** for **${productName}**!\n\nHere is your key:\n\`\`\`${key}\`\`\`\nKeep it safe! 💙`)
           .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
         await targetUser.send({ embeds: [dmEmbed] });
       } catch (e) {}
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
+    return;
+  }
+
+  // ===== /delivered =====
+  if (i.isChatInputCommand() && i.commandName === 'delivered') {
+    if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
+    const tickets = await getTickets();
+    const ticket = tickets[i.channelId];
+    if (!ticket) return i.reply({ content: '⚠️ This is not an active ticket.', ephemeral: true });
+    if (ticket.categorie !== 'purchase') return i.reply({ content: '⚠️ This command only works in purchase tickets.', ephemeral: true });
+
+    await i.deferReply();
+    try {
+      const guild = await client.guilds.fetch(GUILD_ID);
+      const customerId = ticket.userId;
+      const member = await guild.members.fetch(customerId).catch(() => null);
+      if (member && !member.roles.cache.has(CUSTOMER_ROLE_ID)) {
+        await member.roles.add(CUSTOMER_ROLE_ID, 'Purchase delivered').catch(() => {});
+      }
+
+      const confirmEmbed = new EmbedBuilder()
+        .setTitle('📦 Did you receive your delivery?')
+        .setColor(COLOR_LIGHT_BLUE)
+        .setThumbnail(LOGO)
+        .setDescription(
+          `<@${customerId}>, please confirm if you have successfully received your delivery.\n\n` +
+          `If you click **Yes**, a review will be automatically posted in <#${REVIEW_CHANNEL_ID}>.`
+        )
+        .setFooter({ text: 'Zenith', iconURL: LOGO })
+        .setTimestamp();
+
+      const confirmRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`confirm_delivery_${customerId}_${ticket.productName || 'unknown'}_${ticket.plan || 'unknown'}`)
+          .setLabel('Yes').setEmoji('✅').setStyle(ButtonStyle.Success)
+      );
+
+      await i.channel.send({ embeds: [confirmEmbed], components: [confirmRow] });
+      await i.editReply({ content: '✅ Delivery confirmation sent to the customer.' });
+    } catch (e) { await i.editReply({ content: `❌ Error: ${e.message}` }); }
     return;
   }
 
@@ -1236,6 +1202,11 @@ client.on('interactionCreate', async (i) => {
           const stillHas = (await getPurchases()).some(o => o.userId === targetUser.id && o.productName === p.productName);
           if (!stillHas) { await member.roles.remove(p.roleId, 'License removed').catch(() => {}); rolesRemoved++; }
         }
+      }
+      // Customer rol ook weghalen als geen purchases meer
+      const remaining = (await getPurchases()).filter(p => p.userId === targetUser.id);
+      if (remaining.length === 0 && member.roles.cache.has(CUSTOMER_ROLE_ID)) {
+        await member.roles.remove(CUSTOMER_ROLE_ID, 'No active purchases').catch(() => {});
       }
       await updateOverview();
       const embed = new EmbedBuilder().setTitle('License Removed').setColor(COLOR_RED).setThumbnail(LOGO)
@@ -1490,18 +1461,6 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Select menus =====
   if (i.isStringSelectMenu()) {
-    // Review product
-    if (i.customId === 'review_product_select') {
-      const productName = i.values[0];
-      const existingReview = reviews.get(i.user.id);
-      if (!existingReview) return i.update({ content: 'Session expired. Use `/review` again.', components: [] });
-      existingReview.productName = productName;
-      const embed = new EmbedBuilder().setTitle('Create Review')
-        .setDescription(`**Product:** ${productName}\n\nChoose a star rating.`)
-        .setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO);
-      return i.update({ embeds: [embed], components: [starRow(null), submitRow()] });
-    }
-
     // Ticket category
     if (i.customId === 'ticket_category_select') {
       const choice = i.values[0];
@@ -1540,14 +1499,12 @@ client.on('interactionCreate', async (i) => {
       return i.showModal(modal);
     }
 
-    // Purchase step 1: product
     if (i.customId === 'purchase_product_select') {
       const data = pendingPurchases.get(i.user.id);
       if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
       data.productName = i.values[0];
       const planMenu = new StringSelectMenuBuilder()
-        .setCustomId('purchase_plan_select')
-        .setPlaceholder('Select a plan')
+        .setCustomId('purchase_plan_select').setPlaceholder('Select a plan')
         .addOptions([
           { label: '1 week', value: '1 week' },
           { label: '1 month', value: '1 month' },
@@ -1559,22 +1516,16 @@ client.on('interactionCreate', async (i) => {
       });
     }
 
-    // Purchase step 2: plan
     if (i.customId === 'purchase_plan_select') {
       const data = pendingPurchases.get(i.user.id);
       if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
       data.plan = i.values[0];
       const payMenu = new StringSelectMenuBuilder()
-        .setCustomId('purchase_payment_select')
-        .setPlaceholder('Select a payment method')
+        .setCustomId('purchase_payment_select').setPlaceholder('Select a payment method')
         .addOptions(
           Object.entries(PAYMENT_METHODS).map(([key, m]) => {
             const id = emojiToId(m.emoji);
-            return {
-              label: m.name,
-              value: key,
-              emoji: id ? { id } : undefined,
-            };
+            return { label: m.name, value: key, emoji: id ? { id } : undefined };
           })
         );
       return i.update({
@@ -1585,7 +1536,6 @@ client.on('interactionCreate', async (i) => {
       });
     }
 
-    // Purchase step 3: payment
     if (i.customId === 'purchase_payment_select') {
       const data = pendingPurchases.get(i.user.id);
       if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
@@ -1608,7 +1558,6 @@ client.on('interactionCreate', async (i) => {
       return;
     }
 
-    // Product remove
     if (i.customId === 'product_remove_select') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const productName = i.values[0];
@@ -1650,16 +1599,69 @@ client.on('interactionCreate', async (i) => {
         const guild = await client.guilds.fetch(GUILD_ID);
         const ticketChannel = await createTicket(guild, i.user, categoryKey, { question });
         await i.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>` });
-      } catch (e) {
-        await i.editReply({ content: `❌ Error: ${e.message}` });
-      }
+      } catch (e) { await i.editReply({ content: `❌ Error: ${e.message}` }); }
       return;
     }
   }
 
   // ===== Buttons =====
   if (i.isButton()) {
-    // FIX 3: delay na role add zodat cache updatet
+    // Delivery confirmation → auto review
+    if (i.customId.startsWith('confirm_delivery_')) {
+      const parts = i.customId.split('_');
+      const customerId = parts[2];
+      const productName = parts[3] ? parts[3].replace(/_/g, ' ') : 'Unknown';
+      const plan = parts[4] ? parts[4].replace(/_/g, ' ') : 'Unknown';
+
+      if (i.user.id !== customerId) return i.reply({ content: '❌ Only the customer can confirm delivery.', ephemeral: true });
+      await i.deferReply({ ephemeral: true });
+
+      try {
+        const guild = await client.guilds.fetch(GUILD_ID);
+        const customerUser = await client.users.fetch(customerId).catch(() => i.user);
+
+        // Review-teller ophogen
+        let reviewNum = 1;
+        try {
+          const reviewChannel = await client.channels.fetch(REVIEW_CHANNEL_ID).catch(() => null);
+          reviewNum = await nextReviewNumber(reviewChannel);
+          await writeReviewCounter(reviewNum);
+          cachedReviewCounter = reviewNum;
+        } catch (e) { console.error('Review counter error:', e.message); }
+
+        const reviewEmbed = new EmbedBuilder()
+          .setTitle(`Review #${reviewNum}`)
+          .setColor(COLOR_GOLD)
+          .setThumbnail(LOGO)
+          .setAuthor({ name: customerUser.displayName || customerUser.username, iconURL: customerUser.displayAvatarURL() })
+          .addFields(
+            { name: 'Product', value: productName, inline: true },
+            { name: 'Plan', value: plan === 'lifetime' ? 'Lifetime' : plan, inline: true },
+            { name: 'Customer', value: `<@${customerId}>`, inline: true }
+          )
+          .setDescription('✅ Verified purchase — thank you for your review!')
+          .setFooter({ text: 'Zenith', iconURL: LOGO })
+          .setTimestamp();
+
+        const reviewChannel = await client.channels.fetch(REVIEW_CHANNEL_ID).catch(() => null);
+        if (reviewChannel) {
+          await reviewChannel.send({ embeds: [reviewEmbed] });
+        }
+
+        // Ticket opslaan als "closed" voor stats + rol cleanup
+        const tickets = await getTickets();
+        if (tickets[i.channelId]) {
+          await removeTicket(i.channelId);
+          setTimeout(async () => { try { await i.channel.delete('Delivery confirmed'); } catch (e) {} }, 5000);
+        }
+
+        await i.editReply({ content: `✅ Thank you! Your review has been posted in <#${REVIEW_CHANNEL_ID}>.` });
+      } catch (e) {
+        await i.editReply({ content: `❌ Error: ${e.message}` });
+      }
+      return;
+    }
+
     if (i.customId === 'verify_accept_rules') {
       try {
         if (i.member.roles.cache.has(VERIFY_ROLE_ID)) return i.reply({ content: '❌ You are already verified!', ephemeral: true });
@@ -1793,7 +1795,7 @@ client.on('interactionCreate', async (i) => {
 
     if (i.customId.startsWith('suggest_approve_') || i.customId.startsWith('suggest_reject_')) {
       const messageId = i.customId.split('_').pop();
-      if (!i.member.roles.cache.has(REQUIRED_ROLE_ID)) return i.reply({ content: `You need the <@&${REQUIRED_ROLE_ID}> role.`, ephemeral: true });
+      if (!i.member.roles.cache.has(CUSTOMER_ROLE_ID)) return i.reply({ content: `You need the <@&${CUSTOMER_ROLE_ID}> role.`, ephemeral: true });
       try {
         const suggestions = await getSuggestions();
         const s = suggestions[messageId];
@@ -1809,40 +1811,10 @@ client.on('interactionCreate', async (i) => {
       } catch (e) { await i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
       return;
     }
-
-    const review = reviews.get(i.user.id);
-    if (!review) return i.reply({ content: 'This review expired. Use `/review` again.', ephemeral: true });
-
-    if (i.customId.startsWith('star_')) {
-      const n = parseInt(i.customId.split('_')[1]);
-      review.rating = n;
-      return i.update({ components: [starRow(n), submitRow()] });
-    }
-
-    if (i.customId === 'submit') {
-      if (!review.rating) return i.reply({ content: 'Choose a star rating first.', ephemeral: true });
-      await i.deferUpdate();
-      let number;
-      try { number = await nextNumber(i.channel); } catch (e) { number = '?'; }
-      if (number !== '?') {
-        try { await writeCounter(number); cachedCounter = number; } catch (e) {}
-      }
-      const embed = new EmbedBuilder()
-        .setTitle(`Review #${number}`).setColor(COLOR_GOLD).setTimestamp()
-        .setAuthor({ name: i.user.displayName, iconURL: i.user.displayAvatarURL() })
-        .addFields(
-          { name: 'Product', value: review.productName },
-          { name: 'Rating', value: `${stars(review.rating)} (${review.rating}/5)` },
-          { name: 'Extra', value: review.extra }
-        ).setThumbnail(LOGO).setFooter({ text: 'Zenith', iconURL: LOGO });
-      await i.editReply({ components: [] });
-      await i.channel.send({ embeds: [embed] });
-      reviews.delete(i.user.id);
-    }
   }
 });
 
-// ===== Welcome / Join =====
+// ===== Welcome =====
 client.on('guildMemberAdd', async (member) => {
   if (member.guild.id !== GUILD_ID) return;
   try {
@@ -1883,7 +1855,6 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   const hadRole = oldMember.roles.cache.has(VERIFY_ROLE_ID);
   const hasRole = newMember.roles.cache.has(VERIFY_ROLE_ID);
   if (hadRole !== hasRole) {
-    // kleine delay om Discord cache te laten updaten
     setTimeout(() => { updateRulesMessage().catch(() => {}); }, 1000);
   }
 });
