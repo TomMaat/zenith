@@ -1848,8 +1848,7 @@ client.on('guildMemberAdd', async (member) => {
         `Hey <@${member.id}>, welcome to **Zenith**! 🎉\n\n` +
         `We're glad to have you here. Make sure to read the rules in <#${RULES_CHANNEL_ID}> and accept them to get access.\n\n` +
         `> 🛒 Check out our products in <#${PRICING_CHANNEL_ID}>\n` +
-        `> 🎫 Open a ticket if you need help\n` +
-        `> 📦 View our purchase log in <#${PURCHASE_LOG_CHANNEL_ID}>`
+        `> 🎫 Open a ticket if you need help`
       )
       .setFooter({ text: `Member #${member.guild.memberCount}`, iconURL: LOGO })
       .setTimestamp();
