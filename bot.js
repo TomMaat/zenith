@@ -1845,14 +1845,14 @@ client.on('guildMemberAdd', async (member) => {
       .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
       .setDescription(
-        `Hey <@${member.id}>, welcome to **Zenith**! 🎉\n\n` +
-        `We're glad to have you here. Make sure to read the rules in <#${RULES_CHANNEL_ID}> and accept them to get access.\n\n` +
-        `> 🛒 Check out our products in <#${PRICING_CHANNEL_ID}>\n` +
-        `> 🎫 Open a ticket if you need help`
+        `Welcome <@${member.id}>! 🎉\n\n` +
+        `Please read the rules in <#${RULES_CHANNEL_ID}> and accept them to get access.\n\n` +
+        `> 🛒 Products → <#${PRICING_CHANNEL_ID}>\n` +
+        `> 🎫 Need help? Open a ticket.`
       )
       .setFooter({ text: `Member #${member.guild.memberCount}`, iconURL: LOGO })
       .setTimestamp();
-    await channel.send({ content: `<@${member.id}>`, embeds: [embed] });
+    await channel.send({ embeds: [embed] });
   } catch (e) { console.error('Welcome:', e.message); }
   await updateRulesMessage();
 });
