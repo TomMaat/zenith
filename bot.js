@@ -55,7 +55,7 @@ const WELCOME_CHANNEL_ID = '1565405396527489134';
 const PRODUCT = 'Zenith Custom Bypass';
 const STATUS_INTERVAL = 8000;
 
-// ===== Payment Methods (met emoji's) =====
+// ===== Payment Methods =====
 const PAYMENT_METHODS = {
   ideal:  { name: 'iDeal',        emoji: '<:ideal:1564724669129560174>' },
   tikkie: { name: 'Tikkie',       emoji: '<:tikkie:1564724092244983958>' },
@@ -688,13 +688,22 @@ async function setupPaymentMethods() {
 const getRulesMessageId = async () => (await readGist()).rulesMessageId;
 async function setRulesMessageId(id) { const d = await readGist(); d.rulesMessageId = id; await writeGist(d); }
 
+// FIX 1: robuustere verified count met force fetch + fallback
 async function getVerifiedCount() {
   try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    await guild.members.fetch();
+    const guild = await client.guilds.fetch({ guild: GUILD_ID, force: true });
+    await guild.members.fetch({ force: true });
     const role = guild.roles.cache.get(VERIFY_ROLE_ID);
-    return role ? role.members.size : 0;
-  } catch (e) { return 0; }
+    if (!role) return 0;
+    const cachedCount = role.members.size;
+    if (cachedCount > 0) return cachedCount;
+    let count = 0;
+    guild.members.cache.forEach(m => { if (m.roles.cache.has(VERIFY_ROLE_ID)) count++; });
+    return count;
+  } catch (e) {
+    console.error('getVerifiedCount error:', e.message);
+    return 0;
+  }
 }
 
 async function updateRulesMessage() {
@@ -995,7 +1004,7 @@ async function setupPricing() {
     if (!channel) return;
     await clearBotMessages(channel);
     const embed = new EmbedBuilder()
-      .setTitle('Zenith Custom Bypass').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
+      .setTitle('Zenith Private').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
       .setDescription('> Premium external cheat with advanced bypass.\n> ⚡ Fast delivery • 🔒 Safe • 🕐 24/7 Support')
       .addFields(
         { name: '💰 Pricing', value: '```\n1 Week    →  €7.50\n1 Month   →  €20.00\nLifetime  →  €60.00\n```', inline: false },
@@ -1497,7 +1506,6 @@ client.on('interactionCreate', async (i) => {
     if (i.customId === 'ticket_category_select') {
       const choice = i.values[0];
 
-      // Purchase → 3-staps dropdown flow
       if (choice === 'purchase') {
         await i.deferReply({ ephemeral: true });
         const products = await getProducts();
@@ -1514,7 +1522,6 @@ client.on('interactionCreate', async (i) => {
         });
       }
 
-      // Support / Bug → modal direct openen
       const cat = TICKET_CATEGORIES[choice];
       if (!cat) return i.reply({ content: 'Unknown category.', ephemeral: true });
 
@@ -1652,12 +1659,13 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Buttons =====
   if (i.isButton()) {
+    // FIX 3: delay na role add zodat cache updatet
     if (i.customId === 'verify_accept_rules') {
       try {
         if (i.member.roles.cache.has(VERIFY_ROLE_ID)) return i.reply({ content: '❌ You are already verified!', ephemeral: true });
         await i.member.roles.add(VERIFY_ROLE_ID);
         await i.reply({ content: '✅ You have accepted the rules and are now verified!', ephemeral: true });
-        await updateRulesMessage();
+        setTimeout(() => { updateRulesMessage().catch(() => {}); }, 1500);
       } catch (e) { await i.reply({ content: `❌ Error: ${e.message}`, ephemeral: true }); }
       return;
     }
@@ -1874,7 +1882,10 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (newMember.guild.id !== GUILD_ID) return;
   const hadRole = oldMember.roles.cache.has(VERIFY_ROLE_ID);
   const hasRole = newMember.roles.cache.has(VERIFY_ROLE_ID);
-  if (hadRole !== hasRole) await updateRulesMessage();
+  if (hadRole !== hasRole) {
+    // kleine delay om Discord cache te laten updaten
+    setTimeout(() => { updateRulesMessage().catch(() => {}); }, 1000);
+  }
 });
 
 // ===== Channel delete =====
