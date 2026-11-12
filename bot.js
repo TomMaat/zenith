@@ -16,15 +16,15 @@ const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551
 const PORT = process.env.PORT || 3000;
 
 // ===== Colors =====
-const COLOR_LIGHT_BLUE = 0x000000;
-const COLOR_RED = 0x000000;
-const COLOR_GOLD = 0x000000;
-const COLOR_DARK = 0x000000;
+const COLOR_LIGHT_BLUE = 0x2b2b2b;
+const COLOR_RED = 0x2b2b2b;
+const COLOR_GOLD = 0x2b2b2b;
+const COLOR_DARK = 0x2b2b2b;
 
 // ===== Settings =====
-const CUSTOMER_ROLE_ID = '1564635023787950090';   // altijd na aankoop
-const REVIEW_CHANNEL_ID = '1568416985832890438';   // reviews komen hier
-const PURCHASE_ROLE_ID = '1564415128659824731';    // staff die /purchase mag
+const CUSTOMER_ROLE_ID = '1564635023787950090';
+const REVIEW_CHANNEL_ID = '1568416985832890438';
+const PURCHASE_ROLE_ID = '1564415128659824731';
 const PURCHASE_LOG_CHANNEL_ID = '1564761373026681205';
 const SUGGESTIE_CHANNEL_ID = '1568755542799945909';
 const RULES_CHANNEL_ID = '1564632375336505344';
@@ -203,7 +203,7 @@ async function readGist() {
   });
   if (!res.ok) throw new Error(`Gist read failed: ${res.status}`);
   const data = await res.json();
-  const parsed = JSON.parse(data.files['Zenith.json'].content);
+  const parsed = JSON.parse(data.files['zenith.json'].content);
   return {
     reviewCounter: parsed.reviewCounter || 0,
     purchases: parsed.purchases || [],
@@ -227,7 +227,7 @@ async function writeGist(data) {
   const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: { 'Zenith.json': { content: JSON.stringify(data, null, 2) } } }),
+    body: JSON.stringify({ files: { 'zenith.json': { content: JSON.stringify(data, null, 2) } } }),
   });
   if (!res.ok) throw new Error(`Gist write failed: ${res.status}`);
 }
@@ -832,7 +832,7 @@ function renderContent(content, mentions) {
   return html;
 }
 function renderEmbed(e) {
-  const color = '#000000';
+  const color = '#2b2b2b';
   let fields = '';
   if (e.fields?.length) {
     fields = `<div class="embed-fields">${e.fields.map(f =>
@@ -907,7 +907,7 @@ body { margin: 0; background: #313338; color: #dbdee1; font-family: 'gg sans', '
 .message-body { flex: 1; min-width: 0; }
 .message-header { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
 .username { font-weight: 500; font-size: 16px; color: #fff; }
-.bot-badge { background: #000000; color: #fff; font-size: 10px; font-weight: 600; padding: 1px 4px; border-radius: 3px; }
+.bot-badge { background: #2b2b2b; color: #fff; font-size: 10px; font-weight: 600; padding: 1px 4px; border-radius: 3px; }
 .timestamp { color: #949ba4; font-size: 12px; }
 .message-content { color: #dbdee1; word-wrap: break-word; white-space: pre-wrap; }
 .message-content a { color: #00a8fc; text-decoration: none; }
@@ -1203,7 +1203,6 @@ client.on('interactionCreate', async (i) => {
           if (!stillHas) { await member.roles.remove(p.roleId, 'License removed').catch(() => {}); rolesRemoved++; }
         }
       }
-      // Customer rol ook weghalen als geen purchases meer
       const remaining = (await getPurchases()).filter(p => p.userId === targetUser.id);
       if (remaining.length === 0 && member.roles.cache.has(CUSTOMER_ROLE_ID)) {
         await member.roles.remove(CUSTOMER_ROLE_ID, 'No active purchases').catch(() => {});
@@ -1461,7 +1460,6 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Select menus =====
   if (i.isStringSelectMenu()) {
-    // Ticket category
     if (i.customId === 'ticket_category_select') {
       const choice = i.values[0];
 
@@ -1606,7 +1604,6 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Buttons =====
   if (i.isButton()) {
-    // Delivery confirmation → auto review
     if (i.customId.startsWith('confirm_delivery_')) {
       const parts = i.customId.split('_');
       const customerId = parts[2];
@@ -1620,7 +1617,6 @@ client.on('interactionCreate', async (i) => {
         const guild = await client.guilds.fetch(GUILD_ID);
         const customerUser = await client.users.fetch(customerId).catch(() => i.user);
 
-        // Review-teller ophogen
         let reviewNum = 1;
         try {
           const reviewChannel = await client.channels.fetch(REVIEW_CHANNEL_ID).catch(() => null);
@@ -1648,7 +1644,6 @@ client.on('interactionCreate', async (i) => {
           await reviewChannel.send({ embeds: [reviewEmbed] });
         }
 
-        // Ticket opslaan als "closed" voor stats + rol cleanup
         const tickets = await getTickets();
         if (tickets[i.channelId]) {
           await removeTicket(i.channelId);
