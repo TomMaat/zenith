@@ -12,7 +12,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const GIST_ID = process.env.GIST_ID;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1568360961205870722/70ce4239-ef72-4641-be4a-ebb0d6f201e0.png?ex=6af03237&is=6aeee0b7&hm=f0b8a70a64469c003317640f0d3492c71adbd21d8a595e87ca002a9f89654358&';
+const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551432594063360/logo_rifle.png?ex=6af78180&is=6af63000&hm=41f5f60378d370bcbc50b0353922b61884533ba5ff080665c59d814c503b6749&';
 const PORT = process.env.PORT || 3000;
 
 // ===== Colors =====
@@ -61,13 +61,13 @@ const TICKET_CATEGORIES = {
 
 // ===== Rules =====
 const RULES_TEXT =
-  "**1. PAYMENTS**\n> • Only use the official payment methods provided by Zenith.\n> • Double-check your order and total price before paying.\n> • Fake payment proofs and fraud are strictly prohibited.\n> • Never send payments to unofficial accounts.\n\n" +
+  "**1. PAYMENTS**\n> • Only use the official payment methods provided by Scorpion.\n> • Double-check your order and total price before paying.\n> • Fake payment proofs and fraud are strictly prohibited.\n> • Never send payments to unofficial accounts.\n\n" +
   "**2. ORDERS**\n> • Check your order carefully before completing your purchase.\n> • Always provide accurate information.\n> • Delivery times may vary depending on the product.\n> • Open a ticket if you experience any issues with your order.\n\n" +
   "**3. REFUNDS**\n> • Submit all refund requests through a ticket.\n> • Refund requests are handled according to applicable policies and laws.\n> • All applicable consumer rights remain valid.\n\n" +
   "**4. FRAUD AND ABUSE**\n> • Scamming, fraud, and abuse are strictly prohibited.\n> • False claims regarding payments or orders are not allowed.\n\n" +
   "**5. CUSTOMER SUPPORT**\n> • Open a ticket if you need assistance.\n> • Do not spam tickets or create multiple tickets for the same issue.\n> • Remain respectful towards staff members.\n> • Never share your passwords or sensitive information.\n\n" +
   "**6. ADVERTISING**\n> • Advertising other shops without permission is prohibited.\n> • Spam and unsolicited promotional messages are not allowed.\n> • Advertising is only permitted in designated channels.\n\n" +
-  "*Thank you for choosing Zenith.*";
+  "*Thank you for choosing Scorpion.*";
 
 // ===== HTTP =====
 http.createServer((req, res) => { res.writeHead(200); res.end('ok'); }).listen(PORT);
@@ -76,7 +76,7 @@ if (SELF_URL) setInterval(() => fetch(SELF_URL).catch(() => {}), 12 * 60 * 1000)
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
-  presence: { status: 'online', activities: [{ name: 'Zenith', type: 3 }] },
+  presence: { status: 'online', activities: [{ name: 'Scorpion', type: 3 }] },
 });
 const pendingPurchases = new Map();
 
@@ -203,7 +203,7 @@ async function readGist() {
   });
   if (!res.ok) throw new Error(`Gist read failed: ${res.status}`);
   const data = await res.json();
-  const parsed = JSON.parse(data.files['zenith.json'].content);
+  const parsed = JSON.parse(data.files['Scorpion.json'].content);
   return {
     reviewCounter: parsed.reviewCounter || 0,
     purchases: parsed.purchases || [],
@@ -227,7 +227,7 @@ async function writeGist(data) {
   const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: { 'zenith.json': { content: JSON.stringify(data, null, 2) } } }),
+    body: JSON.stringify({ files: { 'Scorpion.json': { content: JSON.stringify(data, null, 2) } } }),
   });
   if (!res.ok) throw new Error(`Gist write failed: ${res.status}`);
 }
@@ -300,7 +300,7 @@ async function checkBans() {
               await log.send({ embeds: [new EmbedBuilder()
                 .setColor(COLOR_LIGHT_BLUE)
                 .setDescription(`🔓 <@${b.userId}> auto-unbanned (temporary ban expired)`)
-                .setFooter({ text: 'Zenith', iconURL: LOGO })
+                .setFooter({ text: 'Scorpion', iconURL: LOGO })
                 .setTimestamp()] });
             }
           } catch (e) {}
@@ -327,7 +327,7 @@ function buildSuggestionEmbed(s) {
       { name: 'By', value: `<@${s.auteurId}>`, inline: true },
       { name: 'Votes', value: `✅ ${s.approve.length}  •  ❌ ${s.reject.length}`, inline: true }
     )
-    .setFooter({ text: 'Zenith', iconURL: LOGO })
+    .setFooter({ text: 'Scorpion', iconURL: LOGO })
     .setTimestamp(s.gestart);
 }
 function buildSuggestionRow(messageId, s) {
@@ -357,7 +357,7 @@ function buildLegitEmbed(votes, confirmedRejects = []) {
       (cc > 0 ? `\n> 🟢 Confirmed (with proof) — **${cc}**` : '')
     )
     .setThumbnail(LOGO)
-    .setFooter({ text: 'Zenith', iconURL: LOGO });
+    .setFooter({ text: 'Scorpion', iconURL: LOGO });
 }
 function buildLegitRow(votes) {
   return new ActionRowBuilder().addComponents(
@@ -409,7 +409,7 @@ async function logVote(userId, type, target) {
     const embed = new EmbedBuilder()
       .setColor(COLOR_LIGHT_BLUE)
       .setDescription(`<@${userId}> voted ${type === 'approve' ? '✅ approve' : '❌ reject'} on ${target}`)
-      .setFooter({ text: 'Zenith', iconURL: LOGO })
+      .setFooter({ text: 'Scorpion', iconURL: LOGO })
       .setTimestamp();
     await channel.send({ embeds: [embed] });
   } catch (e) {}
@@ -532,7 +532,7 @@ async function buildOverviewEmbed() {
     .setTitle('Active Purchases')
     .setColor(COLOR_LIGHT_BLUE)
     .setThumbnail(LOGO)
-    .setFooter({ text: 'Zenith', iconURL: LOGO })
+    .setFooter({ text: 'Scorpion', iconURL: LOGO })
     .setTimestamp();
   for (const plan of ['1 week', '1 month', 'lifetime']) {
     const list = perPlan[plan] || [];
@@ -585,7 +585,7 @@ function buildProductPanelEmbed(products) {
     .setTitle('📦 Product Management')
     .setColor(COLOR_LIGHT_BLUE)
     .setThumbnail(LOGO)
-    .setFooter({ text: 'Zenith', iconURL: LOGO })
+    .setFooter({ text: 'Scorpion', iconURL: LOGO })
     .setTimestamp();
   if (list.length === 0) {
     embed.setDescription('*No products configured yet.*\n\nUse the buttons below to add or remove products.');
@@ -695,10 +695,10 @@ async function updateRulesMessage() {
     const msg = await channel.messages.fetch(messageId).catch(() => null);
     if (!msg) return setupRules();
     const embed = new EmbedBuilder()
-      .setAuthor({ name: 'ZENITH RULES', iconURL: LOGO })
+      .setAuthor({ name: 'Scorpion RULES', iconURL: LOGO })
       .setColor(COLOR_DARK)
-      .setDescription(`Welcome to Zenith. Please read the rules carefully before placing an order.\n\n${RULES_TEXT}`)
-      .setFooter({ text: 'Zenith', iconURL: LOGO })
+      .setDescription(`Welcome to Scorpion. Please read the rules carefully before placing an order.\n\n${RULES_TEXT}`)
+      .setFooter({ text: 'Scorpion', iconURL: LOGO })
       .setThumbnail(LOGO)
       .setTimestamp();
     const row = new ActionRowBuilder().addComponents(
@@ -715,10 +715,10 @@ async function setupRules() {
     await clearBotMessages(channel);
     const verifiedCount = await getVerifiedCount();
     const embed = new EmbedBuilder()
-      .setAuthor({ name: 'ZENITH RULES', iconURL: LOGO })
+      .setAuthor({ name: 'Scorpion RULES', iconURL: LOGO })
       .setColor(COLOR_DARK)
-      .setDescription(`Welcome to Zenith. Please read the rules carefully before placing an order.\n\n${RULES_TEXT}`)
-      .setFooter({ text: 'Zenith', iconURL: LOGO })
+      .setDescription(`Welcome to Scorpion. Please read the rules carefully before placing an order.\n\n${RULES_TEXT}`)
+      .setFooter({ text: 'Scorpion', iconURL: LOGO })
       .setThumbnail(LOGO)
       .setTimestamp();
     const row = new ActionRowBuilder().addComponents(
@@ -740,7 +740,7 @@ function buildGiveawayEmbed(g) {
   return new EmbedBuilder()
     .setTitle('🎉 Giveaway 🎉').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
     .setDescription(`**Prize:** ${g.item}\n**Winners:** ${g.winners}\n**Ends:** <t:${Math.floor(g.eindTijd / 1000)}:R>\n\nReact with 🎉 to enter!`)
-    .setFooter({ text: `Zenith • Hosted by ${g.hostTag || 'unknown'}`, iconURL: LOGO })
+    .setFooter({ text: `Scorpion • Hosted by ${g.hostTag || 'unknown'}`, iconURL: LOGO })
     .setTimestamp(g.gestart);
 }
 function buildGiveawayEndedEmbed(g, winners, isReroll = false) {
@@ -748,7 +748,7 @@ function buildGiveawayEndedEmbed(g, winners, isReroll = false) {
   return new EmbedBuilder()
     .setTitle(isReroll ? '🎉 Giveaway Rerolled 🎉' : '🎉 Giveaway Ended 🎉').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
     .setDescription(`**Prize:** ${g.item}\n**${isReroll ? 'New winners' : 'Winners'}:** ${winnerText}\n\nCongratulations! 🎊`)
-    .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+    .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
 }
 async function pickWinners(message, amount) {
   const reaction = message.reactions.cache.get('🎉');
@@ -784,8 +784,8 @@ async function endGiveaway(messageId, channelId) {
           const user = await client.users.fetch(id);
           await user.send({ embeds: [new EmbedBuilder()
             .setTitle('🎉 You won a giveaway!').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
-            .setDescription(`Congratulations! You won **${g.item}** in the **Zenith** giveaway!`)
-            .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp()] });
+            .setDescription(`Congratulations! You won **${g.item}** in the **Scorpion** giveaway!`)
+            .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp()] });
         } catch (e) {}
       }
     } else {
@@ -957,7 +957,7 @@ async function closeTicket(channel, closerId) {
         { name: 'Closed by', value: `<@${closerId}>`, inline: true },
         { name: 'Category', value: cat ? cat.name : 'Unknown', inline: true },
         { name: 'Messages', value: `${messageCount}`, inline: true }
-      ).setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+      ).setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
     await transcriptChannel.send({ embeds: [transcriptEmbed], files: [attachment] });
   } catch (e) { console.error('transcript:', e.message); }
   await removeTicket(channel.id);
@@ -972,14 +972,14 @@ async function setupPricing() {
     if (!channel) return;
     await clearBotMessages(channel);
     const embed = new EmbedBuilder()
-      .setTitle('Zenith Custom Bypass').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
+      .setTitle('Scorpion Custom Bypass').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
       .setDescription('> Premium external cheat with advanced bypass.\n> ⚡ Fast delivery • 🔒 Safe • 🕐 24/7 Support')
       .addFields(
         { name: '💰 Pricing', value: '```\n1 Week    →  €7.50\n1 Month   →  €20.00\nLifetime  →  €60.00\n```', inline: false },
         { name: '🛡️ Product', value: '> • External Cheat\n> • Advanced bypass\n> • Daily Updates\n> • Easy to use interface\n> • 24/7 Support', inline: false },
         { name: '👥 Group Deals', value: '```\nDuo    →  €35 per person\nTrio   →  €25 per person\nSquad  →  €20 per person\n```', inline: false }
       )
-      .setFooter({ text: 'Zenith', iconURL: LOGO });
+      .setFooter({ text: 'Scorpion', iconURL: LOGO });
     await channel.send({ embeds: [embed] });
   } catch (e) { console.error('setupPricing:', e.message); }
 }
@@ -993,7 +993,7 @@ async function setupTicketPanel() {
     const embed = new EmbedBuilder()
       .setTitle('Tickets').setColor(COLOR_LIGHT_BLUE)
       .setDescription('Choose a category below to open a ticket.\n\n> ⚡ Fast delivery\n> 🔒 Safe & reliable\n> 🕐 24/7 Support')
-      .setThumbnail(LOGO).setFooter({ text: 'Zenith', iconURL: LOGO });
+      .setThumbnail(LOGO).setFooter({ text: 'Scorpion', iconURL: LOGO });
     const menu = new StringSelectMenuBuilder()
       .setCustomId('ticket_category_select').setPlaceholder('Category...')
       .addOptions([
@@ -1059,7 +1059,7 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
   const embed = new EmbedBuilder()
     .setTitle(cat.name).setColor(cat.color)
     .setDescription(`<@${user.id}> — describe your question below.`)
-    .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+    .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
 
   if (extraData.productName) {
     embed.addFields(
@@ -1132,13 +1132,13 @@ client.on('interactionCreate', async (i) => {
           { name: 'Key', value: `\`\`\`${key}\`\`\``, inline: false },
           { name: 'Expires', value: endTime === null ? 'Never (Lifetime)' : `<t:${Math.floor(endTime/1000)}:F> (<t:${Math.floor(endTime/1000)}:R>)`, inline: false }
         )
-        .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+        .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
       await i.editReply({ embeds: [embed] });
       try {
         const dmEmbed = new EmbedBuilder()
           .setTitle('Thank you for your purchase!').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
           .setDescription(`Hey <@${targetUser.id}>,\n\nThanks for purchasing the **${planText} Plan** for **${productName}**!\n\nHere is your key:\n\`\`\`${key}\`\`\`\nKeep it safe! 💙`)
-          .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+          .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
         await targetUser.send({ embeds: [dmEmbed] });
       } catch (e) {}
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
@@ -1170,7 +1170,7 @@ client.on('interactionCreate', async (i) => {
           `<@${customerId}>, please confirm if you have successfully received your delivery.\n\n` +
           `If you click **Yes**, a review will be automatically posted in <#${REVIEW_CHANNEL_ID}>.`
         )
-        .setFooter({ text: 'Zenith', iconURL: LOGO })
+        .setFooter({ text: 'Scorpion', iconURL: LOGO })
         .setTimestamp();
 
       const confirmRow = new ActionRowBuilder().addComponents(
@@ -1214,7 +1214,7 @@ client.on('interactionCreate', async (i) => {
           { name: 'Customer', value: `<@${targetUser.id}>`, inline: true },
           { name: 'Products removed', value: existing.map(e => e.productName).join(', '), inline: false },
           { name: 'Roles removed', value: `${rolesRemoved}`, inline: true }
-        ).setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+        ).setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
       await i.editReply({ embeds: [embed] });
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
     return;
@@ -1226,7 +1226,7 @@ client.on('interactionCreate', async (i) => {
     const text = i.options.getString('tekst');
     try {
       const channel = await client.channels.fetch(SUGGESTIE_CHANNEL_ID);
-      const placeholder = new EmbedBuilder().setTitle('New Suggestion').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO).setDescription('Loading...').setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+      const placeholder = new EmbedBuilder().setTitle('New Suggestion').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO).setDescription('Loading...').setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
       const msg = await channel.send({ embeds: [placeholder] });
       const suggestions = await getSuggestions();
       suggestions[msg.id] = { tekst: text, auteurId: i.user.id, approve: [], reject: [], gestart: Date.now() };
@@ -1348,10 +1348,10 @@ client.on('interactionCreate', async (i) => {
       try {
         await targetUser.send({ embeds: [new EmbedBuilder().setTitle('You have been banned').setColor(COLOR_RED).setThumbnail(LOGO)
           .addFields(
-            { name: 'Server', value: 'Zenith', inline: true },
+            { name: 'Server', value: 'Scorpion', inline: true },
             { name: 'Duration', value: durationMs ? formatShortDuration(durationMs) : 'Permanent', inline: true },
             { name: 'Reason', value: reason, inline: false }
-          ).setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp()] });
+          ).setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp()] });
       } catch (e) {}
       await guild.bans.create(targetUser.id, { reason: `${reason} | by ${i.user.tag}` });
       if (durationMs) await addTemporaryBan(targetUser.id, GUILD_ID, Date.now() + durationMs);
@@ -1364,7 +1364,7 @@ client.on('interactionCreate', async (i) => {
             { name: 'Moderator', value: `<@${i.user.id}>`, inline: true },
             { name: 'Duration', value: durationMs ? formatShortDuration(durationMs) : 'Permanent', inline: true },
             { name: 'Reason', value: reason, inline: false }
-          ).setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp()] });
+          ).setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp()] });
       } catch (e) {}
       await i.editReply({ content: `✅ Banned <@${targetUser.id}>${durationMs ? ` for ${formatShortDuration(durationMs)}` : ' permanently'}.` });
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
@@ -1391,7 +1391,7 @@ client.on('interactionCreate', async (i) => {
             { name: 'User', value: `${existingBan.user.tag} (<@${userId}>)`, inline: false },
             { name: 'Moderator', value: `<@${i.user.id}>`, inline: true },
             { name: 'Reason', value: reason, inline: false }
-          ).setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp()] });
+          ).setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp()] });
       } catch (e) {}
       await i.editReply({ content: `✅ Unbanned ${existingBan.user.tag}.` });
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
@@ -1640,7 +1640,7 @@ client.on('interactionCreate', async (i) => {
             { name: 'Customer', value: `<@${customerId}>`, inline: true }
           )
           .setDescription('✅ Verified purchase — thank you for your review!')
-          .setFooter({ text: 'Zenith', iconURL: LOGO })
+          .setFooter({ text: 'Scorpion', iconURL: LOGO })
           .setTimestamp();
 
         const reviewChannel = await client.channels.fetch(REVIEW_CHANNEL_ID).catch(() => null);
@@ -1734,7 +1734,7 @@ client.on('interactionCreate', async (i) => {
         const promptEmbed = new EmbedBuilder()
           .setTitle('Upload proof').setColor(COLOR_RED).setThumbnail(LOGO)
           .setDescription(`Please upload your proof here (screenshots, video, files).\n\nStaff will review it and click **Positive** or **False**.`)
-          .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp();
+          .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
         const closeRow = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
         );
@@ -1766,13 +1766,13 @@ client.on('interactionCreate', async (i) => {
           await refreshLegitPoll();
           await i.channel.send({ embeds: [new EmbedBuilder().setTitle('✅ Reviewed: Positive').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
             .setDescription(`Proof from <@${targetUserId}> is **valid**. ❌ vote added.\nReviewed by: <@${i.user.id}>`)
-            .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp()] });
+            .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp()] });
           await i.editReply({ content: '✅ Positive.' });
         } else {
           await setNotLegitStatus(i.channelId, 'false');
           await i.channel.send({ embeds: [new EmbedBuilder().setTitle('❌ Reviewed: False').setColor(COLOR_RED).setThumbnail(LOGO)
             .setDescription(`Proof from <@${targetUserId}> is **not valid**. No vote added.\nReviewed by: <@${i.user.id}>`)
-            .setFooter({ text: 'Zenith', iconURL: LOGO }).setTimestamp()] });
+            .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp()] });
           await i.editReply({ content: '❌ False.' });
         }
       } catch (e) { try { await i.editReply({ content: `Error: ${e.message}` }); } catch (_) {} }
@@ -1821,7 +1821,7 @@ client.on('guildMemberAdd', async (member) => {
     const channel = await client.channels.fetch(WELCOME_CHANNEL_ID).catch(() => null);
     if (!channel) return;
     const embed = new EmbedBuilder()
-      .setTitle('Welcome to Zenith!')
+      .setTitle('Welcome to Scorpion!')
       .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
       .setDescription(
