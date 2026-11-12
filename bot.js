@@ -16,10 +16,10 @@ const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551
 const PORT = process.env.PORT || 3000;
 
 // ===== Colors =====
-const COLOR_LIGHT_BLUE = 0x00bfff;
-const COLOR_RED = 0xff4444;
-const COLOR_GOLD = 0xffd700;
-const COLOR_DARK = 0x2b2b2b;
+const COLOR_LIGHT_BLUE = 0x000000;
+const COLOR_RED = 0x000000;
+const COLOR_GOLD = 0x000000;
+const COLOR_DARK = 0x000000;
 
 // ===== Settings =====
 const CUSTOMER_ROLE_ID = '1564635023787950090';   // altijd na aankoop
@@ -203,7 +203,7 @@ async function readGist() {
   });
   if (!res.ok) throw new Error(`Gist read failed: ${res.status}`);
   const data = await res.json();
-  const parsed = JSON.parse(data.files['Scorpion.json'].content);
+  const parsed = JSON.parse(data.files['Zenith.json'].content);
   return {
     reviewCounter: parsed.reviewCounter || 0,
     purchases: parsed.purchases || [],
@@ -227,7 +227,7 @@ async function writeGist(data) {
   const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: { 'Scorpion.json': { content: JSON.stringify(data, null, 2) } } }),
+    body: JSON.stringify({ files: { 'Zenith.json': { content: JSON.stringify(data, null, 2) } } }),
   });
   if (!res.ok) throw new Error(`Gist write failed: ${res.status}`);
 }
@@ -832,7 +832,7 @@ function renderContent(content, mentions) {
   return html;
 }
 function renderEmbed(e) {
-  const color = e.color ? `#${e.color.toString(16).padStart(6, '0')}` : '#00bfff';
+  const color = '#000000';
   let fields = '';
   if (e.fields?.length) {
     fields = `<div class="embed-fields">${e.fields.map(f =>
@@ -907,7 +907,7 @@ body { margin: 0; background: #313338; color: #dbdee1; font-family: 'gg sans', '
 .message-body { flex: 1; min-width: 0; }
 .message-header { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
 .username { font-weight: 500; font-size: 16px; color: #fff; }
-.bot-badge { background: #00bfff; color: #fff; font-size: 10px; font-weight: 600; padding: 1px 4px; border-radius: 3px; }
+.bot-badge { background: #000000; color: #fff; font-size: 10px; font-weight: 600; padding: 1px 4px; border-radius: 3px; }
 .timestamp { color: #949ba4; font-size: 12px; }
 .message-content { color: #dbdee1; word-wrap: break-word; white-space: pre-wrap; }
 .message-content a { color: #00a8fc; text-decoration: none; }
