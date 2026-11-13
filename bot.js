@@ -1262,7 +1262,11 @@ function keyLineText(key, rec) {
 }
 
 function buildKeyOverviewEmbeds(keys) {
-  const entries = Object.entries(keys || {})
+  const all = Object.entries(keys || {});
+  // Revoked keys are hidden from the list (only counted in the header).
+  const revoked = all.filter(([, rec]) => rec.banned).length;
+  const entries = all
+    .filter(([, rec]) => !rec.banned)
     .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
 
   let active = 0, idle = 0, dead = 0;
@@ -1274,7 +1278,7 @@ function buildKeyOverviewEmbeds(keys) {
     return keyLineText(k, rec);
   });
 
-  const embeds = [new EmbedBuilder()
+  const summary = new EmbedBuilder()
     .setTitle('🔑 License Keys')
     .setColor(COLOR_LIGHT_BLUE)
     .setThumbnail(LOGO)
@@ -1285,7 +1289,13 @@ function buildKeyOverviewEmbeds(keys) {
       { name: 'Inactive', value: String(dead), inline: true }
     )
     .setFooter({ text: 'Scorpion', iconURL: LOGO })
-    .setTimestamp()];
+    .setTimestamp();
+
+  if (revoked > 0) {
+    summary.addFields({ name: 'Revoked (hidden)', value: String(revoked), inline: true });
+  }
+
+  const embeds = [summary];
 
   const MAX = 3800;
   const chunks = [];
