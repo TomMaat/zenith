@@ -100,6 +100,7 @@ function newKeyRecord(plan, product, createdBy, note) {
     plan: plan,
     product: product || null,
     hwid: null,
+    username: null,
     createdBy: createdBy,
     createdAt: Date.now(),
     activatedAt: null,
@@ -194,7 +195,7 @@ function createKeySystem(opts) {
 
   // ---- auth ---------------------------------------------------------------
 
-  function authLogin(key, hwid) {
+  function authLogin(key, hwid, username) {
     return mutate(function (keys) {
       const rec = keys[key];
       if (!rec) return { result: { status: 401, body: { ok: false, error: 'invalid_key' } }, dirty: false };
@@ -226,6 +227,12 @@ function createKeySystem(opts) {
 
       if (!rec.lastSeen || now - rec.lastSeen > LAST_SEEN_THROTTLE) {
         rec.lastSeen = now;
+        dirty = true;
+      }
+
+      // Keep the display name the user typed in the loader (shown in /keyinfo).
+      if (username && rec.username !== username) {
+        rec.username = username;
         dirty = true;
       }
 
@@ -269,6 +276,9 @@ function createKeySystem(opts) {
 
       const key = normalizeKey(body.key);
       const hwid = typeof body.hwid === 'string' ? body.hwid.trim() : '';
+      const username = typeof body.username === 'string'
+        ? body.username.trim().slice(0, 64)
+        : '';
 
       if (!KEY_PATTERN.test(key)) {
         sendJson(res, 400, { ok: false, error: 'invalid_key_format' });
@@ -280,7 +290,7 @@ function createKeySystem(opts) {
       }
 
       try {
-        const out = await authLogin(key, hwid);
+        const out = await authLogin(key, hwid, username);
         sendJson(res, out.status, out.body);
       } catch (e) {
         sendJson(res, 500, { ok: false, error: 'server_error' });
@@ -412,6 +422,7 @@ function createKeySystem(opts) {
         { name: 'Status', value: keyStatusOf(rec), inline: true },
         { name: 'Plan', value: rec.plan || '?', inline: true },
         { name: 'Product', value: rec.product || '-', inline: true },
+        { name: 'Username', value: rec.username || '-', inline: true },
         { name: 'HWID', value: '`' + maskHwid(rec.hwid) + '`', inline: false },
         { name: 'Created', value: formatStamp(rec.createdAt), inline: true },
         { name: 'Activated', value: rec.activatedAt ? formatStamp(rec.activatedAt) : 'not activated', inline: true },
@@ -681,6 +692,7 @@ const BAN_LOG_CHANNEL_ID = '1555729409535774833';
 const NOT_LEGIT_TICKET_CATEGORY_ID = '1568757119774097559';
 const PAYMENT_METHODS_CHANNEL_ID = '1568415315690258493';
 const PRODUCT_PANEL_CHANNEL_ID = '1568762246270681129';
+const KEY_OVERVIEW_CHANNEL_ID = '1570948087671820310';
 const WELCOME_CHANNEL_ID = '1565405396527489134';
 const STATUS_INTERVAL = 8000;
 
@@ -867,6 +879,7 @@ async function readGist() {
     products: parsed.products || {},
     productPanelMessageId: parsed.productPanelMessageId || null,
     rulesMessageId: parsed.rulesMessageId || null,
+    keyOverviewMessageId: parsed.keyOverviewMessageId || null,
     keys: parsed.keys || {},
   };
 }
@@ -1224,6 +1237,102 @@ async function restartOverview() {
   } catch (e) { console.error('restartOverview:', e.message); }
 }
 function startOverviewInterval() { updateOverview(); setInterval(updateOverview, 60000); }
+
+// ===== Key overview =====
+const getKeyOverviewMessageId = async () => (await readGist()).keyOverviewMessageId;
+async function setKeyOverviewMessageId(id) { const d = await readGist(); d.keyOverviewMessageId = id; await writeGist(d); }
+
+function keyStatusLabel(rec) {
+  if (rec.banned) return '🚫 revoked';
+  if (rec.paused) return '⏸️ paused';
+  if (!rec.hwid) return '🟡 not activated';
+  if (rec.expiresAt !== null && rec.expiresAt !== undefined && Date.now() > rec.expiresAt) return '🔴 expired';
+  return '🟢 active';
+}
+
+function keyLineText(key, rec) {
+  let time;
+  if (!rec.activatedAt) time = 'not started';
+  else if (rec.expiresAt === null || rec.expiresAt === undefined) time = 'Lifetime';
+  else time = formatRemaining(rec.expiresAt);
+
+  const user = rec.username ? rec.username : '—';
+  const plan = rec.plan || '?';
+  return '`' + key + '` · ' + keyStatusLabel(rec) + ' · ' + plan + ' · ' + user + ' · ' + time;
+}
+
+function buildKeyOverviewEmbeds(keys) {
+  const entries = Object.entries(keys || {})
+    .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
+
+  let active = 0, idle = 0, dead = 0;
+  const lines = entries.map(([k, rec]) => {
+    const label = keyStatusLabel(rec);
+    if (label.indexOf('🟢') !== -1) active++;
+    else if (label.indexOf('🟡') !== -1) idle++;
+    else dead++;
+    return keyLineText(k, rec);
+  });
+
+  const embeds = [new EmbedBuilder()
+    .setTitle('🔑 License Keys')
+    .setColor(COLOR_LIGHT_BLUE)
+    .setThumbnail(LOGO)
+    .addFields(
+      { name: 'Total', value: String(entries.length), inline: true },
+      { name: 'Active', value: String(active), inline: true },
+      { name: 'Not activated', value: String(idle), inline: true },
+      { name: 'Inactive', value: String(dead), inline: true }
+    )
+    .setFooter({ text: 'Scorpion', iconURL: LOGO })
+    .setTimestamp()];
+
+  const MAX = 3800;
+  const chunks = [];
+  let chunk = '';
+  for (const line of lines) {
+    if (chunk.length + line.length + 1 > MAX) { chunks.push(chunk); chunk = ''; }
+    chunk += line + '\n';
+  }
+  if (chunk.length) chunks.push(chunk);
+  if (!chunks.length) chunks.push('*No keys generated yet.*');
+
+  for (let i = 0; i < chunks.length && embeds.length < 10; i++) {
+    embeds.push(new EmbedBuilder()
+      .setColor(COLOR_LIGHT_BLUE)
+      .setDescription(chunks[i].slice(0, 4000))
+      .setFooter({ text: `Scorpion · ${i + 1}/${chunks.length}`, iconURL: LOGO }));
+  }
+
+  if (chunks.length > 9) {
+    embeds[embeds.length - 1].setFooter({ text: `Scorpion · showing 9/${chunks.length} pages`, iconURL: LOGO });
+  }
+  return embeds;
+}
+
+async function updateKeyOverview() {
+  try {
+    const channel = await client.channels.fetch(KEY_OVERVIEW_CHANNEL_ID).catch(() => null);
+    if (!channel) return;
+
+    const data = await readGist();
+    const embeds = buildKeyOverviewEmbeds(data.keys || {});
+
+    const messageId = await getKeyOverviewMessageId();
+    if (messageId) {
+      const msg = await channel.messages.fetch(messageId).catch(() => null);
+      if (msg && msg.author.id === client.user.id) {
+        await msg.edit({ embeds });
+        return;
+      }
+    }
+    await clearBotMessages(channel);
+    const newMsg = await channel.send({ embeds });
+    await setKeyOverviewMessageId(newMsg.id);
+  } catch (e) { console.error('updateKeyOverview:', e.message); }
+}
+
+function startKeyOverviewInterval() { updateKeyOverview(); setInterval(updateKeyOverview, 60000); }
 
 // ===== Product Paneel =====
 function buildProductPanelEmbed(products) {
@@ -1742,7 +1851,13 @@ client.on('interactionCreate', async (i) => {
   }
 
   // ===== License keys =====
-  if (await keyApi.handleInteraction(i)) return;
+  if (await keyApi.handleInteraction(i)) {
+    // Refresh the key overview right away after an admin key command.
+    if (['keygen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
+      updateKeyOverview().catch(() => {});
+    }
+    return;
+  }
 
   // ===== /purchase =====
   if (i.isChatInputCommand() && i.commandName === 'purchase') {
@@ -2525,6 +2640,9 @@ client.once('ready', async () => {
 
   await updateOverview();
   startOverviewInterval();
+
+  await updateKeyOverview();
+  startKeyOverviewInterval();
 
   await setupRules();
   await setupPricing();
