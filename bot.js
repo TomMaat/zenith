@@ -6,6 +6,7 @@ const {
   REST, Routes,
 } = require('discord.js');
 const http = require('http');
+const crypto = require('crypto');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -14,6 +15,646 @@ const GIST_ID = process.env.GIST_ID;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551432594063360/logo_rifle.png?ex=6af78180&is=6af63000&hm=41f5f60378d370bcbc50b0353922b61884533ba5ff080665c59d814c503b6749&';
 const PORT = process.env.PORT || 3000;
+
+// ============================================================================
+//  License keys  -  HWID bound
+//  Storage: the same GitHub gist the bot already uses ("keys" field).
+//  API:     POST /auth/login   { "key": "SCORPION-....", "hwid": "<hash>" }
+//           GET  /auth/ping
+//  readGist/writeGist are function declarations, so they are hoisted and can be
+//  used here even though they are defined further down in this file.
+// ============================================================================
+
+// Only these two Discord accounts may use the key commands.
+const KEY_ADMIN_IDS = new Set([
+  '1033753872927293520',
+  '710623438657683486',
+]);
+
+const KEY_PREFIX = 'SCORPION';
+const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const KEY_PATTERN = /^SCORPION-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+
+// Plan -> duration. null = lifetime.
+const PLAN_MS = {
+  '1 week': 7 * 24 * 60 * 60 * 1000,
+  '1 month': 30.5 * 24 * 60 * 60 * 1000,
+  'lifetime': null,
+};
+
+const PLAN_CHOICES = [
+  { name: '1 week', value: '1 week' },
+  { name: '1 month', value: '1 month' },
+  { name: 'Lifetime', value: 'lifetime' },
+];
+
+const KEY_EMBED_COLOR = 0x2b2b2b;
+const RATE_LIMIT_MAX = 30;
+const RATE_LIMIT_WINDOW = 60 * 1000;
+const LAST_SEEN_THROTTLE = 60 * 1000;
+
+// ---- key helpers -----------------------------------------------------------
+
+function generateKey() {
+  const groups = [];
+  for (let g = 0; g < 4; g++) {
+    let part = '';
+    for (let i = 0; i < 4; i++) part += KEY_ALPHABET[crypto.randomInt(KEY_ALPHABET.length)];
+    groups.push(part);
+  }
+  return KEY_PREFIX + '-' + groups.join('-');
+}
+
+function normalizeKey(input) {
+  if (!input) return '';
+  const cleaned = String(input).trim().toUpperCase().replace(/\s+/g, '');
+  if (KEY_PATTERN.test(cleaned)) return cleaned;
+  const bare = cleaned.replace(/-/g, '');
+  if (/^SCORPION[A-Z0-9]{16}$/.test(bare)) {
+    return bare.slice(0, 8) + '-' + bare.slice(8, 12) + '-' + bare.slice(12, 16) +
+      '-' + bare.slice(16, 20) + '-' + bare.slice(20, 24);
+  }
+  return cleaned;
+}
+
+function parseKeyDuration(input) {
+  const m = String(input || '').trim().toLowerCase().match(/^(\d+)\s*(s|m|h|d|w)$/);
+  if (!m) return null;
+  const mult = { s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000 };
+  return parseInt(m[1], 10) * mult[m[2]];
+}
+
+function formatStamp(ms) {
+  if (ms === null || ms === undefined) return 'Lifetime';
+  return '<t:' + Math.floor(ms / 1000) + ':F> (<t:' + Math.floor(ms / 1000) + ':R>)';
+}
+
+function maskHwid(hwid) {
+  if (!hwid) return 'not bound';
+  if (hwid.length <= 16) return hwid;
+  return hwid.slice(0, 12) + '...' + hwid.slice(-4);
+}
+
+function newKeyRecord(plan, product, createdBy, note) {
+  return {
+    plan: plan,
+    product: product || null,
+    hwid: null,
+    createdBy: createdBy,
+    createdAt: Date.now(),
+    activatedAt: null,
+    expiresAt: null,
+    pendingMs: 0,
+    paused: false,
+    pausedAt: null,
+    banned: false,
+    lastSeen: null,
+    note: note || '',
+  };
+}
+
+function keyStatusOf(rec) {
+  if (rec.banned) return 'revoked';
+  if (rec.paused) return 'paused';
+  if (!rec.hwid) return 'unbound';
+  if (rec.expiresAt !== null && rec.expiresAt !== undefined && Date.now() > rec.expiresAt) return 'expired';
+  return 'active';
+}
+
+function sendJson(res, status, payload) {
+  if (res.headersSent) return;
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+  });
+  res.end(body);
+}
+
+function readJsonBody(req, limit) {
+  limit = limit || 4096;
+  return new Promise(function (resolve, reject) {
+    let size = 0;
+    const chunks = [];
+    req.on('data', function (c) {
+      size += c.length;
+      if (size > limit) { reject(new Error('payload_too_large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', function () {
+      if (!chunks.length) { resolve({}); return; }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch (e) { reject(new Error('invalid_json')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const rateBuckets = new Map();
+function isRateLimited(ip) {
+  const now = Date.now();
+  const bucket = rateBuckets.get(ip);
+  if (!bucket || now > bucket.reset) {
+    rateBuckets.set(ip, { count: 1, reset: now + RATE_LIMIT_WINDOW });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT_MAX;
+}
+
+function clientIp(req) {
+  const fwd = req.headers && req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.length) return fwd.split(',')[0].trim();
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+// ---- key system ------------------------------------------------------------
+
+function createKeySystem(opts) {
+  const readGist = opts.readGist;
+  const writeGist = opts.writeGist;
+
+  // Serialize every read-modify-write of the gist so concurrent logins and
+  // admin commands cannot clobber each other.
+  let lock = Promise.resolve();
+
+  function mutate(mutator) {
+    const task = lock.then(async function () {
+      const data = await readGist();
+      if (!data.keys || typeof data.keys !== 'object') data.keys = {};
+      const out = await mutator(data.keys, data);
+      const dirty = !out || out.dirty !== false;
+      if (dirty) await writeGist(data);
+      return out ? out.result : undefined;
+    });
+    lock = task.then(function () {}, function () {});
+    return task;
+  }
+
+  // ---- auth ---------------------------------------------------------------
+
+  function authLogin(key, hwid) {
+    return mutate(function (keys) {
+      const rec = keys[key];
+      if (!rec) return { result: { status: 401, body: { ok: false, error: 'invalid_key' } }, dirty: false };
+      if (rec.banned) return { result: { status: 403, body: { ok: false, error: 'revoked' } }, dirty: false };
+
+      const now = Date.now();
+      if (rec.paused) return { result: { status: 403, body: { ok: false, error: 'paused' } }, dirty: false };
+      if (rec.expiresAt !== null && rec.expiresAt !== undefined && now > rec.expiresAt) {
+        return { result: { status: 403, body: { ok: false, error: 'expired' } }, dirty: false };
+      }
+      if (rec.hwid && rec.hwid !== hwid) {
+        return { result: { status: 409, body: { ok: false, error: 'hwid_mismatch' } }, dirty: false };
+      }
+
+      let dirty = false;
+
+      if (!rec.hwid) {
+        rec.hwid = hwid;
+        if (!rec.activatedAt) {
+          rec.activatedAt = now;
+          const dur = PLAN_MS[rec.plan];
+          rec.expiresAt = (dur === null || dur === undefined)
+            ? null
+            : now + dur + (rec.pendingMs || 0);
+          rec.pendingMs = 0;
+        }
+        dirty = true;
+      }
+
+      if (!rec.lastSeen || now - rec.lastSeen > LAST_SEEN_THROTTLE) {
+        rec.lastSeen = now;
+        dirty = true;
+      }
+
+      return {
+        result: {
+          status: 200,
+          body: {
+            ok: true,
+            plan: rec.plan,
+            product: rec.product || null,
+            expiresAt: rec.expiresAt === undefined ? null : rec.expiresAt,
+            activatedAt: rec.activatedAt || null,
+          },
+        },
+        dirty: dirty,
+      };
+    });
+  }
+
+  // ---- http ---------------------------------------------------------------
+
+  async function handleAuthRequest(req, res, url) {
+    if (req.method === 'GET' && (url === '/auth/ping' || url === '/health')) {
+      sendJson(res, 200, { ok: true, service: 'scorpion-auth' });
+      return;
+    }
+
+    if (req.method === 'POST' && url === '/auth/login') {
+      if (isRateLimited(clientIp(req))) {
+        sendJson(res, 429, { ok: false, error: 'rate_limited' });
+        return;
+      }
+
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (e) {
+        sendJson(res, 400, { ok: false, error: 'bad_request' });
+        return;
+      }
+
+      const key = normalizeKey(body.key);
+      const hwid = typeof body.hwid === 'string' ? body.hwid.trim() : '';
+
+      if (!KEY_PATTERN.test(key)) {
+        sendJson(res, 400, { ok: false, error: 'invalid_key_format' });
+        return;
+      }
+      if (!/^[A-Za-z0-9_-]{16,128}$/.test(hwid)) {
+        sendJson(res, 400, { ok: false, error: 'invalid_hwid' });
+        return;
+      }
+
+      try {
+        const out = await authLogin(key, hwid);
+        sendJson(res, out.status, out.body);
+      } catch (e) {
+        sendJson(res, 500, { ok: false, error: 'server_error' });
+      }
+      return;
+    }
+
+    sendJson(res, 404, { ok: false, error: 'not_found' });
+  }
+
+  // Synchronous router: returns true when the request belongs to the auth API.
+  function handleHttp(req, res) {
+    const url = (req.url || '/').split('?')[0];
+    const isAuth = url === '/auth/login' || url === '/auth/ping' || url === '/health';
+    if (!isAuth) return false;
+    handleAuthRequest(req, res, url).catch(function () {
+      sendJson(res, 500, { ok: false, error: 'server_error' });
+    });
+    return true;
+  }
+
+  // ---- admin commands -----------------------------------------------------
+
+  const commands = [
+    {
+      name: 'keygen',
+      description: 'Generate license keys',
+      options: [
+        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: PLAN_CHOICES },
+        { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
+        { name: 'note', description: 'Optional note', type: 3, required: false },
+      ],
+    },
+    {
+      name: 'keyinfo',
+      description: 'Show info about a license key',
+      options: [{ name: 'key', description: 'License key', type: 3, required: true }],
+    },
+    {
+      name: 'keyreset',
+      description: 'Unbind the HWID of a key so it can be used on another PC',
+      options: [{ name: 'key', description: 'License key', type: 3, required: true }],
+    },
+    {
+      name: 'keyrevoke',
+      description: 'Revoke a license key',
+      options: [
+        { name: 'key', description: 'License key', type: 3, required: true },
+        { name: 'reason', description: 'Reason', type: 3, required: false },
+      ],
+    },
+    {
+      name: 'keylist',
+      description: 'List license keys',
+      options: [{ name: 'plan', description: 'Filter by plan', type: 3, required: false, choices: PLAN_CHOICES }],
+    },
+    {
+      name: 'pause',
+      description: 'Pause or resume the countdown of a key',
+      options: [{ name: 'key', description: 'License key', type: 3, required: true }],
+    },
+    {
+      name: 'extend',
+      description: 'Add time to a key (e.g. 7d, 12h)',
+      options: [
+        { name: 'key', description: 'License key', type: 3, required: true },
+        { name: 'duration', description: 'Amount of time, e.g. 7d / 12h / 30m', type: 3, required: true },
+      ],
+    },
+    {
+      name: 'shorten',
+      description: 'Remove time from a key (e.g. 7d, 12h)',
+      options: [
+        { name: 'key', description: 'License key', type: 3, required: true },
+        { name: 'duration', description: 'Amount of time, e.g. 7d / 12h / 30m', type: 3, required: true },
+      ],
+    },
+  ];
+
+  function keyEmbed(title, fields) {
+    return new EmbedBuilder().setTitle(title).setColor(KEY_EMBED_COLOR).addFields(fields);
+  }
+
+  async function cmdKeygen(i) {
+    const plan = i.options.getString('plan');
+    const amount = i.options.getInteger('amount') || 1;
+    const note = i.options.getString('note') || '';
+
+    if (!(plan in PLAN_MS)) {
+      await i.reply({ content: 'Unknown plan.', ephemeral: true });
+      return;
+    }
+
+    await i.deferReply({ ephemeral: true });
+
+    const created = await mutate(function (keys) {
+      const list = [];
+      for (let n = 0; n < amount; n++) {
+        let key = generateKey();
+        while (keys[key]) key = generateKey();
+        keys[key] = newKeyRecord(plan, null, i.user.id, note);
+        list.push(key);
+      }
+      return { result: list, dirty: true };
+    });
+
+    await i.editReply({
+      embeds: [keyEmbed('🔑 Keys generated', [
+        { name: 'Plan', value: plan, inline: true },
+        { name: 'Amount', value: String(created.length), inline: true },
+        { name: 'Keys', value: '```\n' + created.join('\n') + '\n```', inline: false },
+      ]).setFooter({ text: 'Scorpion' }).setTimestamp()],
+    });
+  }
+
+  async function cmdKeyinfo(i) {
+    const key = normalizeKey(i.options.getString('key'));
+    await i.deferReply({ ephemeral: true });
+
+    const data = await readGist();
+    const rec = data.keys ? data.keys[key] : null;
+    if (!rec) {
+      await i.editReply({ content: '⚠️ Unknown key.' });
+      return;
+    }
+
+    await i.editReply({
+      embeds: [keyEmbed('🔑 ' + key, [
+        { name: 'Status', value: keyStatusOf(rec), inline: true },
+        { name: 'Plan', value: rec.plan || '?', inline: true },
+        { name: 'Product', value: rec.product || '-', inline: true },
+        { name: 'HWID', value: '`' + maskHwid(rec.hwid) + '`', inline: false },
+        { name: 'Created', value: formatStamp(rec.createdAt), inline: true },
+        { name: 'Activated', value: rec.activatedAt ? formatStamp(rec.activatedAt) : 'not activated', inline: true },
+        { name: 'Expires', value: rec.activatedAt ? formatStamp(rec.expiresAt) : 'starts on activation', inline: true },
+        { name: 'Last seen', value: rec.lastSeen ? formatStamp(rec.lastSeen) : 'never', inline: true },
+        { name: 'Note', value: rec.note || '-', inline: true },
+      ]).setFooter({ text: 'Scorpion' }).setTimestamp()],
+    });
+  }
+
+  async function cmdKeyreset(i) {
+    const key = normalizeKey(i.options.getString('key'));
+    await i.deferReply({ ephemeral: true });
+
+    const out = await mutate(function (keys) {
+      const rec = keys[key];
+      if (!rec) return { result: null, dirty: false };
+      rec.hwid = null;
+      rec.lastSeen = null;
+      return { result: rec, dirty: true };
+    });
+
+    if (!out) {
+      await i.editReply({ content: '⚠️ Unknown key.' });
+      return;
+    }
+    await i.editReply({
+      content: '✅ HWID unbound for `' + key + '`. The next login binds the new PC. Expiry is unchanged.',
+    });
+  }
+
+  async function cmdKeyrevoke(i) {
+    const key = normalizeKey(i.options.getString('key'));
+    const reason = i.options.getString('reason') || '';
+    await i.deferReply({ ephemeral: true });
+
+    const out = await mutate(function (keys) {
+      const rec = keys[key];
+      if (!rec) return { result: null, dirty: false };
+      rec.banned = true;
+      rec.revokedAt = Date.now();
+      if (reason) rec.revokeReason = reason;
+      return { result: rec, dirty: true };
+    });
+
+    if (!out) {
+      await i.editReply({ content: '⚠️ Unknown key.' });
+      return;
+    }
+    await i.editReply({ content: '🚫 Key `' + key + '` revoked.' + (reason ? ' Reason: ' + reason : '') });
+  }
+
+  async function cmdKeylist(i) {
+    const planFilter = i.options.getString('plan');
+    await i.deferReply({ ephemeral: true });
+
+    const data = await readGist();
+    const all = data.keys || {};
+    const entries = Object.entries(all)
+      .filter(function (e) { return !planFilter || (e[1].plan === planFilter); })
+      .sort(function (a, b) { return (b[1].createdAt || 0) - (a[1].createdAt || 0); });
+
+    if (!entries.length) {
+      await i.editReply({ content: 'No keys found.' });
+      return;
+    }
+
+    const shown = entries.slice(0, 30).map(function (e) {
+      const rec = e[1];
+      return '`' + e[0] + '` — ' + keyStatusOf(rec) + ' — ' + (rec.plan || '?') +
+        (rec.hwid ? ' — ' + maskHwid(rec.hwid) : '');
+    }).join('\n');
+
+    await i.editReply({
+      embeds: [keyEmbed('🔑 Keys (' + entries.length + ')', [
+        { name: 'Showing', value: String(Math.min(30, entries.length)), inline: true },
+        { name: 'Total', value: String(entries.length), inline: true },
+        { name: 'List', value: shown.slice(0, 3900), inline: false },
+      ]).setFooter({ text: 'Scorpion' }).setTimestamp()],
+    });
+  }
+
+  async function cmdPause(i) {
+    const key = normalizeKey(i.options.getString('key'));
+    await i.deferReply({ ephemeral: true });
+
+    const out = await mutate(function (keys) {
+      const rec = keys[key];
+      if (!rec) return { result: null, dirty: false };
+      const now = Date.now();
+
+      if (!rec.paused) {
+        rec.paused = true;
+        rec.pausedAt = now;
+        return { result: { paused: true, rec: rec }, dirty: true };
+      }
+
+      // resume: shift the expiry by the time spent paused
+      const frozen = now - (rec.pausedAt || now);
+      if (rec.expiresAt !== null && rec.expiresAt !== undefined) rec.expiresAt += frozen;
+      rec.paused = false;
+      rec.pausedAt = null;
+      return { result: { paused: false, rec: rec, frozen: frozen }, dirty: true };
+    });
+
+    if (!out) {
+      await i.editReply({ content: '⚠️ Unknown key.' });
+      return;
+    }
+
+    if (out.paused) {
+      await i.editReply({ content: '⏸️ Key `' + key + '` paused. Countdown is frozen until you run `/pause` again.' });
+    } else {
+      const mins = Math.round(out.frozen / 60000);
+      await i.editReply({ content: '▶️ Key `' + key + '` resumed (+' + mins + ' min added back).' });
+    }
+  }
+
+  async function changeKeyTime(i, sign) {
+    const key = normalizeKey(i.options.getString('key'));
+    const raw = i.options.getString('duration');
+    const ms = parseKeyDuration(raw);
+
+    await i.deferReply({ ephemeral: true });
+
+    if (!ms) {
+      await i.editReply({ content: '⚠️ Invalid duration. Use e.g. `7d`, `12h`, `30m`.' });
+      return;
+    }
+
+    const out = await mutate(function (keys) {
+      const rec = keys[key];
+      if (!rec) return { result: { error: 'unknown' }, dirty: false };
+      if (rec.banned) return { result: { error: 'revoked' }, dirty: false };
+
+      const delta = sign * ms;
+
+      // Not activated yet: shift the duration that starts at activation.
+      if (!rec.activatedAt) {
+        const planMs = PLAN_MS[rec.plan];
+        let pending = (rec.pendingMs || 0) + delta;
+        if (planMs !== null && planMs !== undefined) {
+          const floor = -planMs;
+          if (pending < floor) pending = floor;
+        }
+        rec.pendingMs = pending;
+        return { result: { mode: 'pending', rec: rec }, dirty: true };
+      }
+
+      if (rec.expiresAt === null || rec.expiresAt === undefined) {
+        return { result: { error: 'lifetime' }, dirty: false };
+      }
+
+      rec.expiresAt += delta;
+      const now = Date.now();
+      if (rec.expiresAt < now) rec.expiresAt = now;
+      return { result: { mode: 'active', rec: rec }, dirty: true };
+    });
+
+    if (!out || out.error === 'unknown') {
+      await i.editReply({ content: '⚠️ Unknown key.' });
+      return;
+    }
+    if (out.error === 'revoked') {
+      await i.editReply({ content: '⚠️ That key is revoked.' });
+      return;
+    }
+    if (out.error === 'lifetime') {
+      await i.editReply({ content: '⚠️ Lifetime keys have no expiry to change.' });
+      return;
+    }
+
+    const arrow = sign > 0 ? '➕' : '➖';
+    if (out.mode === 'pending') {
+      await i.editReply({
+        content: arrow + ' `' + key + '` is not activated yet. Pending adjustment: ' +
+          Math.round((out.rec.pendingMs || 0) / 60000) + ' min (applied at activation).',
+      });
+    } else {
+      await i.editReply({
+        content: arrow + ' `' + key + '` updated. New expiry: ' + formatStamp(out.rec.expiresAt),
+      });
+    }
+  }
+
+  async function handleInteraction(i) {
+    if (!i.isChatInputCommand()) return false;
+
+    const name = i.commandName;
+    const known = ['keygen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten'];
+    if (known.indexOf(name) === -1) return false;
+
+    if (!KEY_ADMIN_IDS.has(i.user.id)) {
+      await i.reply({ content: '❌ You are not allowed to use this command.', ephemeral: true });
+      return true;
+    }
+
+    try {
+      if (name === 'keygen') await cmdKeygen(i);
+      else if (name === 'keyinfo') await cmdKeyinfo(i);
+      else if (name === 'keyreset') await cmdKeyreset(i);
+      else if (name === 'keyrevoke') await cmdKeyrevoke(i);
+      else if (name === 'keylist') await cmdKeylist(i);
+      else if (name === 'pause') await cmdPause(i);
+      else if (name === 'extend') await changeKeyTime(i, 1);
+      else if (name === 'shorten') await changeKeyTime(i, -1);
+    } catch (e) {
+      console.error('key command ' + name + ':', e && e.message);
+      try {
+        if (i.deferred || i.replied) await i.editReply({ content: '❌ Error: ' + (e && e.message) });
+        else await i.reply({ content: '❌ Error: ' + (e && e.message), ephemeral: true });
+      } catch (_) {}
+    }
+
+    return true;
+  }
+
+  // ---- used by /purchase --------------------------------------------------
+
+  async function registerKey(key, plan, product, createdBy) {
+    const normalized = normalizeKey(key);
+    if (!KEY_PATTERN.test(normalized)) return { created: false, valid: false };
+
+    return mutate(function (keys) {
+      if (keys[normalized]) {
+        return { result: { created: false, valid: true, record: keys[normalized] }, dirty: false };
+      }
+      keys[normalized] = newKeyRecord(plan, product, createdBy, 'created by /purchase');
+      return { result: { created: true, valid: true, record: keys[normalized] }, dirty: true };
+    });
+  }
+
+  return {
+    commands: commands,
+    handleInteraction: handleInteraction,
+    handleHttp: handleHttp,
+    registerKey: registerKey,
+    normalizeKey: normalizeKey,
+    generateKey: generateKey,
+  };
+}
+
+const keyApi = createKeySystem({ readGist, writeGist });
 
 // ===== Colors =====
 const COLOR_LIGHT_BLUE = 0x2b2b2b;
@@ -70,7 +711,11 @@ const RULES_TEXT =
   "*Thank you for choosing Scorpion.*";
 
 // ===== HTTP =====
-http.createServer((req, res) => { res.writeHead(200); res.end('ok'); }).listen(PORT);
+http.createServer((req, res) => {
+  if (keyApi.handleHttp(req, res)) return;
+  res.writeHead(200);
+  res.end('ok');
+}).listen(PORT);
 const SELF_URL = process.env.RENDER_EXTERNAL_URL;
 if (SELF_URL) setInterval(() => fetch(SELF_URL).catch(() => {}), 12 * 60 * 1000);
 
@@ -185,6 +830,7 @@ const commands = [
   { name: 'remove', description: 'Remove user from ticket', options: [{ name: 'user', description: 'User', type: 6, required: true }] },
   { name: 'close', description: 'Close this ticket' },
   { name: 'rename', description: 'Rename this ticket', options: [{ name: 'name', description: 'New name', type: 3, required: true }] },
+  ...keyApi.commands,
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -221,6 +867,7 @@ async function readGist() {
     products: parsed.products || {},
     productPanelMessageId: parsed.productPanelMessageId || null,
     rulesMessageId: parsed.rulesMessageId || null,
+    keys: parsed.keys || {},
   };
 }
 async function writeGist(data) {
@@ -1094,6 +1741,9 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== License keys =====
+  if (await keyApi.handleInteraction(i)) return;
+
   // ===== /purchase =====
   if (i.isChatInputCommand() && i.commandName === 'purchase') {
     if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: `You need the <@&${PURCHASE_ROLE_ID}> role.`, ephemeral: true });
@@ -1116,6 +1766,8 @@ client.on('interactionCreate', async (i) => {
       const roleId = productData.roleId;
       if (roleId) await member.roles.add(roleId, `Purchase: ${productName} (${plan})`).catch(() => {});
       await member.roles.add(CUSTOMER_ROLE_ID, `Purchase: ${productName} (${plan})`).catch(() => {});
+      // Make the delivered key usable by the auth API (HWID binds on first login).
+      await keyApi.registerKey(key, plan, productName, i.user.id).catch(() => {});
       const { endTime } = await addPurchase(targetUser.id, productName, plan, key, roleId);
       await updateOverview();
       const planText = plan === 'lifetime' ? 'Lifetime' : plan;
