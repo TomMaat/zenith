@@ -132,6 +132,9 @@ function sendJson(res, status, payload) {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
   });
   res.end(body);
 }
@@ -184,6 +187,14 @@ function createKeySystem(opts) {
     const token = (expiresAt === null || expiresAt === undefined) ? 'null' : String(expiresAt);
     return crypto.createHmac('sha256', AUTH_SECRET)
       .update(key + '|' + hwid + '|' + token)
+      .digest('hex');
+  }
+
+  // HMAC for the website check (no HWID, read-only).
+  function signWeb(key, expiresAt) {
+    const token = (expiresAt === null || expiresAt === undefined) ? 'null' : String(expiresAt);
+    return crypto.createHmac('sha256', AUTH_SECRET)
+      .update(key + '|web|' + token)
       .digest('hex');
   }
 
@@ -266,11 +277,98 @@ function createKeySystem(opts) {
     });
   }
 
+  // Read-only check used by the website. Does NOT bind a HWID and does NOT
+  // touch the gist, so a web login can never block the real loader login.
+  function authCheck(key, username) {
+    return mutate(function (keys) {
+      const rec = keys[key];
+      if (!rec) return { result: { status: 401, body: { ok: false, error: 'invalid_key' } }, dirty: false };
+      if (rec.banned) return { result: { status: 403, body: { ok: false, error: 'revoked' } }, dirty: false };
+      if (rec.paused) return { result: { status: 403, body: { ok: false, error: 'paused' } }, dirty: false };
+
+      const now = Date.now();
+      if (rec.expiresAt !== null && rec.expiresAt !== undefined && now > rec.expiresAt) {
+        return { result: { status: 403, body: { ok: false, error: 'expired' } }, dirty: false };
+      }
+
+      const expiresAt = (rec.expiresAt === undefined) ? null : rec.expiresAt;
+      const boundName = rec.username || null;
+
+      // The name typed on the website must match the account bound to the key.
+      if (boundName && username && boundName.toLowerCase() !== username.toLowerCase()) {
+        return { result: { status: 403, body: { ok: false, error: 'name_mismatch' } }, dirty: false };
+      }
+
+      return {
+        result: {
+          status: 200,
+          body: {
+            ok: true,
+            plan: rec.plan || null,
+            product: rec.product || null,
+            username: boundName || username || null,
+            expiresAt: expiresAt,
+            activated: !!rec.hwid,
+            sig: signWeb(key, expiresAt),
+          },
+        },
+        dirty: false,
+      };
+    });
+  }
+
   // ---- http ---------------------------------------------------------------
 
   async function handleAuthRequest(req, res, url) {
+    // CORS preflight from the Netlify site.
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '86400',
+        'Content-Length': '0',
+      });
+      res.end();
+      return;
+    }
+
     if (req.method === 'GET' && (url === '/auth/ping' || url === '/health')) {
       sendJson(res, 200, { ok: true, service: 'scorpion-auth' });
+      return;
+    }
+
+    // Website login: name + key, read-only (never binds a HWID).
+    if (req.method === 'POST' && url === '/auth/check') {
+      if (isRateLimited(clientIp(req))) {
+        sendJson(res, 429, { ok: false, error: 'rate_limited' });
+        return;
+      }
+
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (e) {
+        sendJson(res, 400, { ok: false, error: 'bad_request' });
+        return;
+      }
+
+      const key = normalizeKey(body.key);
+      const username = typeof body.username === 'string'
+        ? body.username.trim().slice(0, 64)
+        : '';
+
+      if (!KEY_PATTERN.test(key)) {
+        sendJson(res, 400, { ok: false, error: 'invalid_key_format' });
+        return;
+      }
+
+      try {
+        const out = await authCheck(key, username);
+        sendJson(res, out.status, out.body);
+      } catch (e) {
+        sendJson(res, 500, { ok: false, error: 'server_error' });
+      }
       return;
     }
 
@@ -318,7 +416,8 @@ function createKeySystem(opts) {
   // Synchronous router: returns true when the request belongs to the auth API.
   function handleHttp(req, res) {
     const url = (req.url || '/').split('?')[0];
-    const isAuth = url === '/auth/login' || url === '/auth/ping' || url === '/health';
+    const isAuth = url === '/auth/login' || url === '/auth/check' ||
+      url === '/auth/ping' || url === '/health';
     if (!isAuth) return false;
     handleAuthRequest(req, res, url).catch(function () {
       sendJson(res, 500, { ok: false, error: 'server_error' });
