@@ -13,6 +13,9 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const GIST_ID = process.env.GIST_ID;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+// HMAC secret for signing /auth/login replies. Must match kAuthSecret in
+// AntiCrack.hpp. Override it on Render with your own AUTH_SECRET.
+const AUTH_SECRET = process.env.AUTH_SECRET || '76f701f25b2af7801d726c117a0853f944cc0309a5fb40e4';
 const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551432594063360/logo_rifle.png?ex=6af78180&is=6af63000&hm=41f5f60378d370bcbc50b0353922b61884533ba5ff080665c59d814c503b6749&';
 const PORT = process.env.PORT || 3000;
 
@@ -176,6 +179,14 @@ function createKeySystem(opts) {
   const readGist = opts.readGist;
   const writeGist = opts.writeGist;
 
+  // HMAC of "key|hwid|expiresAt" so the client can reject fake servers.
+  function signAuth(key, hwid, expiresAt) {
+    const token = (expiresAt === null || expiresAt === undefined) ? 'null' : String(expiresAt);
+    return crypto.createHmac('sha256', AUTH_SECRET)
+      .update(key + '|' + hwid + '|' + token)
+      .digest('hex');
+  }
+
   // Serialize every read-modify-write of the gist so concurrent logins and
   // admin commands cannot clobber each other.
   let lock = Promise.resolve();
@@ -236,6 +247,8 @@ function createKeySystem(opts) {
         dirty = true;
       }
 
+      const expiresAt = (rec.expiresAt === undefined) ? null : rec.expiresAt;
+
       return {
         result: {
           status: 200,
@@ -243,8 +256,9 @@ function createKeySystem(opts) {
             ok: true,
             plan: rec.plan,
             product: rec.product || null,
-            expiresAt: rec.expiresAt === undefined ? null : rec.expiresAt,
+            expiresAt: expiresAt,
             activatedAt: rec.activatedAt || null,
+            sig: signAuth(key, hwid, expiresAt),
           },
         },
         dirty: dirty,
