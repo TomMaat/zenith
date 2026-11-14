@@ -13,11 +13,22 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const GIST_ID = process.env.GIST_ID;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+// HMAC secret for signing /auth/login replies. Must match kAuthSecret in
+// AntiCrack.hpp. Override it on Render with your own AUTH_SECRET.
 const AUTH_SECRET = process.env.AUTH_SECRET || '76f701f25b2af7801d726c117a0853f944cc0309a5fb40e4';
-const VERIFY_WEBHOOK_URL = process.env.VERIFY_WEBHOOK_URL || '';
 const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551432594063360/logo_rifle.png?ex=6af78180&is=6af63000&hm=41f5f60378d370bcbc50b0353922b61884533ba5ff080665c59d814c503b6749&';
 const PORT = process.env.PORT || 3000;
 
+// ============================================================================
+//  License keys  -  HWID bound
+//  Storage: the same GitHub gist the bot already uses ("keys" field).
+//  API:     POST /auth/login   { "key": "SCORPION-....", "hwid": "<hash>" }
+//           GET  /auth/ping
+//  readGist/writeGist are function declarations, so they are hoisted and can be
+//  used here even though they are defined further down in this file.
+// ============================================================================
+
+// Only these two Discord accounts may use the key commands.
 const KEY_ADMIN_IDS = new Set([
   '1033753872927293520',
   '710623438657683486',
@@ -27,6 +38,7 @@ const KEY_PREFIX = 'SCORPION';
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const KEY_PATTERN = /^SCORPION-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
+// Plan -> duration. null = lifetime.
 const PLAN_MS = {
   '1 week': 7 * 24 * 60 * 60 * 1000,
   '1 month': 30.5 * 24 * 60 * 60 * 1000,
@@ -43,6 +55,8 @@ const KEY_EMBED_COLOR = 0x2b2b2b;
 const RATE_LIMIT_MAX = 30;
 const RATE_LIMIT_WINDOW = 60 * 1000;
 const LAST_SEEN_THROTTLE = 60 * 1000;
+
+// ---- key helpers -----------------------------------------------------------
 
 function generateKey() {
   const groups = [];
@@ -159,10 +173,13 @@ function clientIp(req) {
   return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
 
+// ---- key system ------------------------------------------------------------
+
 function createKeySystem(opts) {
   const readGist = opts.readGist;
   const writeGist = opts.writeGist;
 
+  // HMAC of "key|hwid|expiresAt" so the client can reject fake servers.
   function signAuth(key, hwid, expiresAt) {
     const token = (expiresAt === null || expiresAt === undefined) ? 'null' : String(expiresAt);
     return crypto.createHmac('sha256', AUTH_SECRET)
@@ -170,6 +187,8 @@ function createKeySystem(opts) {
       .digest('hex');
   }
 
+  // Serialize every read-modify-write of the gist so concurrent logins and
+  // admin commands cannot clobber each other.
   let lock = Promise.resolve();
 
   function mutate(mutator) {
@@ -184,6 +203,8 @@ function createKeySystem(opts) {
     lock = task.then(function () {}, function () {});
     return task;
   }
+
+  // ---- auth ---------------------------------------------------------------
 
   function authLogin(key, hwid, username) {
     return mutate(function (keys) {
@@ -220,6 +241,7 @@ function createKeySystem(opts) {
         dirty = true;
       }
 
+      // Keep the display name the user typed in the loader (shown in /keyinfo).
       if (username && rec.username !== username) {
         rec.username = username;
         dirty = true;
@@ -243,6 +265,8 @@ function createKeySystem(opts) {
       };
     });
   }
+
+  // ---- http ---------------------------------------------------------------
 
   async function handleAuthRequest(req, res, url) {
     if (req.method === 'GET' && (url === '/auth/ping' || url === '/health')) {
@@ -291,6 +315,7 @@ function createKeySystem(opts) {
     sendJson(res, 404, { ok: false, error: 'not_found' });
   }
 
+  // Synchronous router: returns true when the request belongs to the auth API.
   function handleHttp(req, res) {
     const url = (req.url || '/').split('?')[0];
     const isAuth = url === '/auth/login' || url === '/auth/ping' || url === '/health';
@@ -300,6 +325,8 @@ function createKeySystem(opts) {
     });
     return true;
   }
+
+  // ---- admin commands -----------------------------------------------------
 
   const commands = [
     {
@@ -507,6 +534,7 @@ function createKeySystem(opts) {
         return { result: { paused: true, rec: rec }, dirty: true };
       }
 
+      // resume: shift the expiry by the time spent paused
       const frozen = now - (rec.pausedAt || now);
       if (rec.expiresAt !== null && rec.expiresAt !== undefined) rec.expiresAt += frozen;
       rec.paused = false;
@@ -546,6 +574,7 @@ function createKeySystem(opts) {
 
       const delta = sign * ms;
 
+      // Not activated yet: shift the duration that starts at activation.
       if (!rec.activatedAt) {
         const planMs = PLAN_MS[rec.plan];
         let pending = (rec.pendingMs || 0) + delta;
@@ -625,6 +654,8 @@ function createKeySystem(opts) {
     return true;
   }
 
+  // ---- used by /purchase --------------------------------------------------
+
   async function registerKey(key, plan, product, createdBy) {
     const normalized = normalizeKey(key);
     if (!KEY_PATTERN.test(normalized)) return { created: false, valid: false };
@@ -638,6 +669,7 @@ function createKeySystem(opts) {
     });
   }
 
+  // HWID reset door staff (ticket modal) — geeft record terug of foutcode
   async function resetHwidByKey(rawKey) {
     const key = normalizeKey(rawKey);
     if (!KEY_PATTERN.test(key)) return { ok: false, error: 'invalid_key_format' };
@@ -668,11 +700,13 @@ function createKeySystem(opts) {
 
 const keyApi = createKeySystem({ readGist, writeGist });
 
+// ===== Colors =====
 const COLOR_LIGHT_BLUE = 0x2b2b2b;
 const COLOR_RED = 0x2b2b2b;
 const COLOR_GOLD = 0x2b2b2b;
 const COLOR_DARK = 0x2b2b2b;
 
+// ===== Settings =====
 const CUSTOMER_ROLE_ID = '1564635023787950090';
 const REVIEW_CHANNEL_ID = '1568416985832890438';
 const PURCHASE_ROLE_ID = '1564415128659824731';
@@ -695,9 +729,11 @@ const KEY_OVERVIEW_CHANNEL_ID = '1570948087671820310';
 const WELCOME_CHANNEL_ID = '1565405396527489134';
 const STATUS_INTERVAL = 8000;
 
+// HWID reset log + categorie
 const HWID_RESET_LOG_CHANNEL_ID = process.env.HWID_RESET_LOG_CHANNEL_ID || '1568756706371051531';
 const HWID_RESET_CATEGORY_ID = '1570957934559502386';
 
+// ===== Payment Methods =====
 const PAYMENT_METHODS = {
   ideal:  { name: 'iDeal',        emoji: '<:ideal:1564724669129560174>' },
   tikkie: { name: 'Tikkie',       emoji: '<:tikkie:1564724092244983958>' },
@@ -714,6 +750,7 @@ const TICKET_CATEGORIES = {
   hwidreset: { name: 'HWID Reset', prefix: 'hwidreset', categoryId: HWID_RESET_CATEGORY_ID, emoji: '🔄', color: COLOR_LIGHT_BLUE },
 };
 
+// ===== Rules =====
 const RULES_TEXT =
   "**1. PAYMENTS**\n> • Only use the official payment methods provided by Scorpion.\n> • Double-check your order and total price before paying.\n> • Fake payment proofs and fraud are strictly prohibited.\n> • Never send payments to unofficial accounts.\n\n" +
   "**2. ORDERS**\n> • Check your order carefully before completing your purchase.\n> • Always provide accurate information.\n> • Delivery times may vary depending on the product.\n> • Open a ticket if you experience any issues with your order.\n\n" +
@@ -723,93 +760,9 @@ const RULES_TEXT =
   "**6. ADVERTISING**\n> • Advertising other shops without permission is prohibited.\n> • Spam and unsolicited promotional messages are not allowed.\n> • Advertising is only permitted in designated channels.\n\n" +
   "*Thank you for choosing Scorpion.*";
 
-function clientIpFromReq(req) {
-  const fwd = req.headers && req.headers['x-forwarded-for'];
-  if (typeof fwd === 'string' && fwd.length) return fwd.split(',')[0].trim();
-  return (req.socket && req.socket.remoteAddress) || 'unknown';
-}
-
-async function sendVerifyLog(discordId, username, ip, ua) {
-  if (!VERIFY_WEBHOOK_URL) return;
-  const payload = {
-    username: 'verify-log',
-    embeds: [{
-      title: 'verify',
-      color: 0x2b2b2b,
-      fields: [
-        { name: 'discord_id', value: String(discordId || 'null'), inline: true },
-        { name: 'username',   value: String(username || 'null'),  inline: true },
-        { name: 'ip',         value: String(ip || 'unknown'),     inline: true },
-        { name: 'user_agent', value: String(ua || 'unknown').slice(0, 1024) },
-      ],
-      timestamp: new Date().toISOString(),
-    }],
-  };
-  try {
-    const r = await fetch(VERIFY_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!r.ok) console.error('verify webhook', r.status);
-  } catch (e) { console.error('verify webhook:', e.message); }
-}
-
-http.createServer(async (req, res) => {
+// ===== HTTP =====
+http.createServer((req, res) => {
   if (keyApi.handleHttp(req, res)) return;
-
-  const urlPath = (req.url || '/').split('?')[0];
-
-  if (req.method === 'POST' && urlPath === '/verify') {
-    if (isRateLimited(clientIpFromReq(req))) {
-      sendJson(res, 429, { ok: false, error: 'rate_limited' });
-      return;
-    }
-    let body;
-    try { body = await readJsonBody(req, 8192); }
-    catch (e) { sendJson(res, 400, { ok: false, error: 'bad_request' }); return; }
-
-    const discordId = typeof body.discordId === 'string' ? body.discordId.trim() : '';
-    const username  = typeof body.username  === 'string' ? body.username.trim().slice(0, 64) : '';
-    const ip        = clientIpFromReq(req);
-    const ua        = req.headers['user-agent'] || 'unknown';
-
-    if (!/^\d{17,20}$/.test(discordId)) {
-      sendJson(res, 400, { ok: false, error: 'invalid_discord_id' });
-      return;
-    }
-
-    await sendVerifyLog(discordId, username, ip, ua);
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === 'GET' && urlPath === '/verify-page') {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verify</title>
-<style>body{background:#313338;color:#dbdee1;font-family:system-ui,Arial,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.box{background:#2b2d31;padding:32px;border-radius:8px;min-width:320px}
-h1{margin:0 0 16px;font-size:20px;color:#f2f3f5}
-input{width:100%;padding:10px;margin-bottom:12px;border-radius:4px;border:1px solid #1e1f22;background:#1e1f22;color:#dbdee1;box-sizing:border-box}
-button{width:100%;padding:10px;border-radius:4px;border:0;background:#5865f2;color:#fff;font-weight:600;cursor:pointer}
-button:hover{background:#4752c4}</style></head><body>
-<div class="box"><h1>Verify</h1>
-<form id="f"><input id="u" placeholder="discord username" required><button type="submit">Verify</button></form></div>
-<script>
-document.getElementById('f').addEventListener('submit', async function(e){
-  e.preventDefault();
-  var id = new URLSearchParams(location.search).get('id') || '';
-  var username = document.getElementById('u').value;
-  try{
-    var r = await fetch('/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({discordId:id,username:username})});
-    document.body.innerHTML = r.ok ? '<div class="box"><h1>Verified</h1><p>You can close this tab.</p></div>' : '<div class="box"><h1>Error</h1><p>Try again.</p></div>';
-  }catch(err){ document.body.innerHTML = '<div class="box"><h1>Error</h1><p>Network error.</p></div>'; }
-});
-</script></body></html>`;
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(html);
-    return;
-  }
-
   res.writeHead(200);
   res.end('ok');
 }).listen(PORT);
@@ -822,6 +775,7 @@ const client = new Client({
 });
 const pendingPurchases = new Map();
 
+// ===== Plans =====
 const PLANS = {
   '1 week': 8.5 * 24 * 60 * 60 * 1000,
   '1 month': 30.5 * 24 * 60 * 60 * 1000,
@@ -866,6 +820,7 @@ function emojiToId(emojiStr) {
   return match ? match[1] : null;
 }
 
+// ===== Commands =====
 const commands = [
   {
     name: 'purchase',
@@ -937,6 +892,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
   } catch (e) { console.error(e); }
 })();
 
+// ===== Gist =====
 async function readGist() {
   const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
     headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' },
@@ -975,14 +931,17 @@ async function writeGist(data) {
   if (!res.ok) throw new Error(`Gist write failed: ${res.status}`);
 }
 
+// Review teller
 const getReviewCounter = async () => (await readGist()).reviewCounter;
 async function writeReviewCounter(n) { const d = await readGist(); d.reviewCounter = n; await writeGist(d); }
 
+// ===== Producten =====
 const getProducts = async () => (await readGist()).products;
 async function saveProducts(p) { const d = await readGist(); d.products = p; await writeGist(d); }
 const getProductPanelMessageId = async () => (await readGist()).productPanelMessageId;
 async function setProductPanelMessageId(id) { const d = await readGist(); d.productPanelMessageId = id; await writeGist(d); }
 
+// ===== Purchases =====
 const getPurchases = async () => (await readGist()).purchases;
 async function savePurchases(p) { const d = await readGist(); d.purchases = p; await writeGist(d); }
 
@@ -1011,6 +970,7 @@ async function removePurchase(userId, productName = null) {
   return removed;
 }
 
+// ===== Bans =====
 const getBans = async () => (await readGist()).bans;
 async function saveBans(b) { const d = await readGist(); d.bans = b; await writeGist(d); }
 async function addTemporaryBan(userId, guildId, endTime) {
@@ -1052,6 +1012,7 @@ async function checkBans() {
 }
 function startBanInterval() { checkBans(); setInterval(checkBans, 60000); }
 
+// ===== Suggestions =====
 const getSuggestions = async () => (await readGist()).suggestions;
 async function saveSuggestions(s) { const d = await readGist(); d.suggestions = s; await writeGist(d); }
 
@@ -1075,6 +1036,7 @@ function buildSuggestionRow(messageId, s) {
   );
 }
 
+// ===== Legit poll =====
 const getLegitVotes = async () => (await readGist()).legitVotes;
 async function saveLegitVotes(v) { const d = await readGist(); d.legitVotes = v; await writeGist(d); }
 const getLegitMessageId = async () => (await readGist()).legitMessageId;
@@ -1138,6 +1100,7 @@ async function setupLegitPoll() {
   } catch (e) { console.error('setupLegitPoll:', e.message); }
 }
 
+// ===== Vote log =====
 async function logVote(userId, type, target) {
   try {
     const channel = await client.channels.fetch(VOTE_LOG_CHANNEL_ID);
@@ -1151,6 +1114,7 @@ async function logVote(userId, type, target) {
   } catch (e) {}
 }
 
+// ===== Review number =====
 async function scanChannel(channel) {
   let highest = 0, lastId = null, searching = true;
   while (searching) {
@@ -1176,6 +1140,7 @@ async function nextReviewNumber(channel) {
   catch (e) { return (await scanChannel(channel)) + 1; }
 }
 
+// ===== Status =====
 let statusToggle = false;
 let cachedReviewCounter = 0;
 async function getMemberCount() {
@@ -1201,6 +1166,7 @@ function startStatusInterval() {
   setInterval(updateStatus, STATUS_INTERVAL);
 }
 
+// ===== Role expiry (per product) =====
 async function checkRoleExpiry() {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
@@ -1233,6 +1199,7 @@ async function checkRoleExpiry() {
 }
 function startExpiryInterval() { checkRoleExpiry(); setInterval(checkRoleExpiry, 60000); }
 
+// ===== Clear bot messages =====
 async function clearBotMessages(channel) {
   let lastId = null, searching = true;
   while (searching) {
@@ -1247,6 +1214,7 @@ async function clearBotMessages(channel) {
   }
 }
 
+// ===== Overview =====
 const getOverviewMessageId = async () => (await readGist()).overzichtMessageId;
 async function setOverviewMessageId(id) { const d = await readGist(); d.overzichtMessageId = id; await writeGist(d); }
 
@@ -1309,6 +1277,7 @@ async function restartOverview() {
 }
 function startOverviewInterval() { updateOverview(); setInterval(updateOverview, 60000); }
 
+// ===== Key overview =====
 const getKeyOverviewMessageId = async () => (await readGist()).keyOverviewMessageId;
 async function setKeyOverviewMessageId(id) { const d = await readGist(); d.keyOverviewMessageId = id; await writeGist(d); }
 
@@ -1333,6 +1302,7 @@ function keyLineText(key, rec) {
 
 function buildKeyOverviewEmbeds(keys) {
   const all = Object.entries(keys || {});
+  // Revoked keys zijn verborgen in de lijst (alleen telling in de header).
   const revoked = all.filter(([, rec]) => rec.banned).length;
   const entries = all
     .filter(([, rec]) => !rec.banned)
@@ -1409,6 +1379,7 @@ async function updateKeyOverview() {
 
 function startKeyOverviewInterval() { updateKeyOverview(); setInterval(updateKeyOverview, 60000); }
 
+// ===== Product Paneel =====
 function buildProductPanelEmbed(products) {
   const list = Object.entries(products);
   const embed = new EmbedBuilder()
@@ -1435,6 +1406,7 @@ function buildProductPanelRows() {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('product_add').setLabel('Add Product').setEmoji('➕').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('product_remove').setLabel('Remove Product').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+      // NIEUW: Rename knop
       new ButtonBuilder().setCustomId('product_rename').setLabel('Rename Product').setEmoji('✏️').setStyle(ButtonStyle.Primary)
     ),
   ];
@@ -1465,6 +1437,7 @@ async function updateProductPanel() {
   } catch (e) { console.error('updateProductPanel:', e.message); }
 }
 
+// ===== Payment Methods =====
 const getPaymentMethodsMessageId = async () => (await readGist()).paymentMethodsMessageId;
 async function setPaymentMethodsMessageId(id) { const d = await readGist(); d.paymentMethodsMessageId = id; await writeGist(d); }
 
@@ -1497,6 +1470,7 @@ async function setupPaymentMethods() {
   } catch (e) { console.error('setupPaymentMethods:', e.message); }
 }
 
+// ===== Rules + Verify =====
 const getRulesMessageId = async () => (await readGist()).rulesMessageId;
 async function setRulesMessageId(id) { const d = await readGist(); d.rulesMessageId = id; await writeGist(d); }
 
@@ -1559,6 +1533,7 @@ async function setupRules() {
   } catch (e) { console.error('setupRules:', e.message); }
 }
 
+// ===== Giveaway =====
 const getGiveaways = async () => (await readGist()).giveaways;
 async function saveGiveaways(g) { const d = await readGist(); d.giveaways = g; await writeGist(d); }
 const getLastGiveaways = async () => (await readGist()).laatsteGiveaways;
@@ -1638,6 +1613,7 @@ async function restoreGiveaways() {
   } catch (e) { console.error('restoreGiveaways:', e.message); }
 }
 
+// ===== Transcript =====
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
@@ -1766,6 +1742,7 @@ body { margin: 0; background: #313338; color: #dbdee1; font-family: 'gg sans', '
   return { html, messageCount: allMessages.length };
 }
 
+// ===== Close ticket =====
 async function closeTicket(channel, closerId) {
   const tickets = await getTickets();
   const ticket = tickets[channel.id];
@@ -1791,6 +1768,7 @@ async function closeTicket(channel, closerId) {
   return { ok: true };
 }
 
+// ===== Pricing =====
 async function setupPricing() {
   try {
     const channel = await client.channels.fetch(PRICING_CHANNEL_ID);
@@ -1809,6 +1787,7 @@ async function setupPricing() {
   } catch (e) { console.error('setupPricing:', e.message); }
 }
 
+// ===== Ticket panel =====
 async function setupTicketPanel() {
   try {
     const channel = await client.channels.fetch(TICKET_PANEL_CHANNEL_ID);
@@ -1824,6 +1803,7 @@ async function setupTicketPanel() {
         { label: 'Support', value: 'support', emoji: '🎫' },
         { label: 'Purchase', value: 'purchase', emoji: '🛒' },
         { label: 'Bug', value: 'bug', emoji: '⚠️' },
+        // HWID Reset optie in ticket paneel
         { label: 'HWID Reset', value: 'hwidreset', emoji: '🔄' },
       ]);
     const row = new ActionRowBuilder().addComponents(menu);
@@ -1831,6 +1811,7 @@ async function setupTicketPanel() {
   } catch (e) { console.error('setupTicketPanel:', e.message); }
 }
 
+// ===== Ticket storage =====
 const getTickets = async () => (await readGist()).tickets;
 async function saveTickets(t) { const d = await readGist(); d.tickets = t; await writeGist(d); }
 async function addTicket(channelId, userId, categoryKey, extra = {}) {
@@ -1850,6 +1831,7 @@ async function setNotLegitStatus(channelId, status) {
   if (n[channelId]) { n[channelId].status = status; n[channelId].updatedAt = Date.now(); await saveNotLegitTickets(n); }
 }
 
+// ===== HWID reset verzoeken =====
 const getHwidResetRequests = async () => (await readGist()).hwidResetRequests || [];
 async function saveHwidResetRequests(list) { const d = await readGist(); d.hwidResetRequests = list; await writeGist(d); }
 async function addHwidResetRequest(entry) {
@@ -1859,6 +1841,7 @@ async function addHwidResetRequest(entry) {
   await saveHwidResetRequests(list);
 }
 
+// ===== Helpers =====
 function stars(n) { return '⭐'.repeat(n) + '☆'.repeat(5 - n); }
 function notLegitReviewRow() {
   return new ActionRowBuilder().addComponents(
@@ -1867,6 +1850,7 @@ function notLegitReviewRow() {
   );
 }
 
+// ===== Create ticket helper =====
 async function createTicket(guild, user, categoryKey, extraData = {}) {
   const cat = TICKET_CATEGORIES[categoryKey];
   if (!cat) throw new Error('Unknown category');
@@ -1903,6 +1887,7 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
     embed.addFields({ name: 'Question', value: extraData.question, inline: false });
   }
 
+  // Alleen Close knop — HWID reset knop is verwijderd
   const closeRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
   );
@@ -1910,6 +1895,8 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
   return ticketChannel;
 }
 
+
+// ===== Interaction handler =====
 client.on('interactionCreate', async (i) => {
   if (i.isAutocomplete()) {
     try {
@@ -1924,13 +1911,16 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== License keys =====
   if (await keyApi.handleInteraction(i)) {
+    // Refresh the key overview right away after an admin key command.
     if (['keygen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
       updateKeyOverview().catch(() => {});
     }
     return;
   }
 
+  // ===== /purchase =====
   if (i.isChatInputCommand() && i.commandName === 'purchase') {
     if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: `You need the <@&${PURCHASE_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply();
@@ -1952,6 +1942,7 @@ client.on('interactionCreate', async (i) => {
       const roleId = productData.roleId;
       if (roleId) await member.roles.add(roleId, `Purchase: ${productName} (${plan})`).catch(() => {});
       await member.roles.add(CUSTOMER_ROLE_ID, `Purchase: ${productName} (${plan})`).catch(() => {});
+      // Make the delivered key usable by the auth API (HWID binds on first login).
       await keyApi.registerKey(key, plan, productName, i.user.id).catch(() => {});
       const { endTime } = await addPurchase(targetUser.id, productName, plan, key, roleId);
       await updateOverview();
@@ -1982,6 +1973,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /delivered =====
   if (i.isChatInputCommand() && i.commandName === 'delivered') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     const tickets = await getTickets();
@@ -2021,6 +2013,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /removelicense =====
   if (i.isChatInputCommand() && i.commandName === 'removelicense') {
     if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: `You need the <@&${PURCHASE_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply();
@@ -2054,6 +2047,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /suggestie =====
   if (i.isChatInputCommand() && i.commandName === 'suggestie') {
     await i.deferReply({ ephemeral: true });
     const text = i.options.getString('tekst');
@@ -2071,6 +2065,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /refresh =====
   if (i.isChatInputCommand() && i.commandName === 'refresh') {
     if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: `You need the <@&${PURCHASE_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply({ ephemeral: true });
@@ -2081,6 +2076,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /removekruis =====
   if (i.isChatInputCommand() && i.commandName === 'removekruis') {
     if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: `You need the <@&${PURCHASE_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply();
@@ -2098,6 +2094,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /giveaway =====
   if (i.isChatInputCommand() && i.commandName === 'giveaway') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply();
@@ -2121,6 +2118,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /reroll =====
   if (i.isChatInputCommand() && i.commandName === 'reroll') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply();
@@ -2144,6 +2142,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /clear =====
   if (i.isChatInputCommand() && i.commandName === 'clear') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply({ ephemeral: true });
@@ -2155,6 +2154,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /ban =====
   if (i.isChatInputCommand() && i.commandName === 'ban') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply();
@@ -2198,6 +2198,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /unban =====
   if (i.isChatInputCommand() && i.commandName === 'unban') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply();
@@ -2224,6 +2225,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /add =====
   if (i.isChatInputCommand() && i.commandName === 'add') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply({ ephemeral: true });
@@ -2242,6 +2244,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /remove =====
   if (i.isChatInputCommand() && i.commandName === 'remove') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply({ ephemeral: true });
@@ -2260,6 +2263,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /close =====
   if (i.isChatInputCommand() && i.commandName === 'close') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     const tickets = await getTickets();
@@ -2269,6 +2273,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== /rename =====
   if (i.isChatInputCommand() && i.commandName === 'rename') {
     if (!i.member.roles.cache.has(TICKET_SUPPORT_ROLE_ID)) return i.reply({ content: `You need the <@&${TICKET_SUPPORT_ROLE_ID}> role.`, ephemeral: true });
     await i.deferReply({ ephemeral: true });
@@ -2281,6 +2286,7 @@ client.on('interactionCreate', async (i) => {
     return;
   }
 
+  // ===== Select menus =====
   if (i.isStringSelectMenu()) {
     if (i.customId === 'ticket_category_select') {
       const choice = i.values[0];
@@ -2301,6 +2307,7 @@ client.on('interactionCreate', async (i) => {
         });
       }
 
+      // HWID Reset — direct een modal met key + reden
       if (choice === 'hwidreset') {
         const tickets = await getTickets();
         if (Object.values(tickets).find(t => t.userId === i.user.id)) {
@@ -2417,6 +2424,7 @@ client.on('interactionCreate', async (i) => {
       return i.update({ content: `✅ Product **${productName}** removed.`, components: [] });
     }
 
+    // Rename product — select -> modal
     if (i.customId === 'product_rename_select') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const productName = i.values[0];
@@ -2442,6 +2450,7 @@ client.on('interactionCreate', async (i) => {
     }
   }
 
+  // ===== Modals =====
   if (i.isModalSubmit()) {
     if (i.customId === 'product_add_modal') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
@@ -2462,6 +2471,7 @@ client.on('interactionCreate', async (i) => {
       } catch (e) { return i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
     }
 
+    // Rename product modal
     if (i.customId.startsWith('product_rename_modal_')) {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const oldName = decodeURIComponent(i.customId.replace('product_rename_modal_', ''));
@@ -2493,6 +2503,7 @@ client.on('interactionCreate', async (i) => {
         products[newName] = { roleId: finalRole };
         await saveProducts(products);
 
+        // Bestaande purchases bijwerken naar de nieuwe naam
         if (newName !== oldName) {
           const purchases = await getPurchases();
           let changed = false;
@@ -2514,6 +2525,7 @@ client.on('interactionCreate', async (i) => {
       } catch (e) { return i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
     }
 
+    // HWID reset modal (via dropdown)
     if (i.customId === 'modal_hwid_reset') {
       const rawKey = i.fields.getTextInputValue('hwid_key');
       const reason = i.fields.getTextInputValue('hwid_reason').trim();
@@ -2540,6 +2552,7 @@ client.on('interactionCreate', async (i) => {
         const rec = result.rec;
         const product = rec.product || 'Onbekend';
 
+        // Log in het logkanaal
         try {
           const logChannel = await client.channels.fetch(HWID_RESET_LOG_CHANNEL_ID).catch(() => null);
           if (logChannel) {
@@ -2563,6 +2576,7 @@ client.on('interactionCreate', async (i) => {
           }
         } catch (e) { console.error('HWID log:', e.message); }
 
+        // Bewaar in gist geschiedenis
         await addHwidResetRequest({
           userId: i.user.id,
           username: i.user.tag,
@@ -2574,6 +2588,7 @@ client.on('interactionCreate', async (i) => {
           at: Date.now(),
         }).catch(() => {});
 
+        // Bevestiging in ticket
         await i.channel.send({
           embeds: [new EmbedBuilder()
             .setTitle('🔄 HWID Reset')
@@ -2589,6 +2604,7 @@ client.on('interactionCreate', async (i) => {
             .setTimestamp()],
         }).catch(() => {});
 
+        // Refresh key overview
         updateKeyOverview().catch(() => {});
 
         await i.editReply({ content: `✅ HWID reset voltooid voor \`${result.key}\`. Je kunt de key nu op je nieuwe PC gebruiken.` });
@@ -2612,6 +2628,7 @@ client.on('interactionCreate', async (i) => {
     }
   }
 
+  // ===== Buttons =====
   if (i.isButton()) {
     if (i.customId.startsWith('confirm_delivery_')) {
       const parts = i.customId.split('_');
@@ -2669,14 +2686,6 @@ client.on('interactionCreate', async (i) => {
       try {
         if (i.member.roles.cache.has(VERIFY_ROLE_ID)) return i.reply({ content: '❌ You are already verified!', ephemeral: true });
         await i.member.roles.add(VERIFY_ROLE_ID);
-
-        await sendVerifyLog(
-          i.user.id,
-          i.user.username,
-          'gateway',
-          'discord-gateway'
-        ).catch(() => {});
-
         await i.reply({ content: '✅ You have accepted the rules and are now verified!', ephemeral: true });
         setTimeout(() => { updateRulesMessage().catch(() => {}); }, 1500);
       } catch (e) { await i.reply({ content: `❌ Error: ${e.message}`, ephemeral: true }); }
@@ -2702,6 +2711,7 @@ client.on('interactionCreate', async (i) => {
       return i.reply({ content: 'Which product do you want to remove?', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
     }
 
+    // Rename knop
     if (i.customId === 'product_rename') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const products = await getProducts();
@@ -2835,6 +2845,7 @@ client.on('interactionCreate', async (i) => {
   }
 });
 
+// ===== Welcome =====
 client.on('guildMemberAdd', async (member) => {
   if (member.guild.id !== GUILD_ID) return;
   try {
@@ -2857,6 +2868,7 @@ client.on('guildMemberAdd', async (member) => {
   await updateRulesMessage();
 });
 
+// ===== Member leave =====
 client.on('guildMemberRemove', async (member) => {
   if (member.guild.id !== GUILD_ID) return;
   try {
@@ -2868,6 +2880,7 @@ client.on('guildMemberRemove', async (member) => {
   } catch (e) {}
 });
 
+// ===== Role update (verify count) =====
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (newMember.guild.id !== GUILD_ID) return;
   const hadRole = oldMember.roles.cache.has(VERIFY_ROLE_ID);
@@ -2877,6 +2890,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   }
 });
 
+// ===== Channel delete =====
 client.on('channelDelete', async (channel) => {
   try {
     const tickets = await getTickets();
@@ -2886,6 +2900,7 @@ client.on('channelDelete', async (channel) => {
   } catch (e) {}
 });
 
+// ===== Ready =====
 client.once('ready', async () => {
   console.log(`Online as ${client.user.tag}`);
   startStatusInterval();
