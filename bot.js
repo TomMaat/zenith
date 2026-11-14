@@ -34,6 +34,10 @@ const KEY_ADMIN_IDS = new Set([
   '710623438657683486',
 ]);
 
+// /newloader posts here. The download site itself is announced in the other one.
+const LOADER_ANNOUNCE_CHANNEL_ID = '1568762187785314504';
+const SITE_INFO_CHANNEL_ID = '1568756502808756375';
+
 const KEY_PREFIX = 'SCORPION';
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const KEY_PATTERN = /^SCORPION-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
@@ -481,6 +485,14 @@ function createKeySystem(opts) {
         { name: 'duration', description: 'Amount of time, e.g. 7d / 12h / 30m', type: 3, required: true },
       ],
     },
+    {
+      name: 'newloader',
+      description: 'Post the "new loader available" announcement (owner only)',
+      options: [
+        { name: 'version', description: 'Version you just uploaded, e.g. 1.0.1', type: 3, required: false },
+        { name: 'ping', description: 'Ping @here with the announcement', type: 5, required: false },
+      ],
+    },
   ];
 
   function keyEmbed(title, fields) {
@@ -721,11 +733,46 @@ function createKeySystem(opts) {
     }
   }
 
+  // Owner-only: announce a loader you uploaded by hand. Nothing is posted
+  // automatically — this command is the only thing that sends the message.
+  async function cmdNewLoader(i) {
+    const version = (i.options.getString('version') || '').trim().replace(/^v/i, '').slice(0, 24);
+    const ping = i.options.getBoolean('ping') === true;
+
+    const channel = await i.client.channels.fetch(LOADER_ANNOUNCE_CHANNEL_ID).catch(function () { return null; });
+    if (!channel || !channel.isTextBased()) {
+      await i.reply({ content: '❌ I cannot post in <#' + LOADER_ANNOUNCE_CHANNEL_ID + '>.', ephemeral: true });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('New Loader Available')
+      .setColor(KEY_EMBED_COLOR)
+      .setThumbnail(LOGO)
+      .setDescription(
+        'A new **Scorpion** build is now live.\n\n' +
+        '**Download** — the site can be found in <#' + SITE_INFO_CHANNEL_ID + '>.\n' +
+        '**Access** — sign in with your name and license key.'
+      )
+      .addFields(
+        { name: 'Version', value: version ? '`v' + version + '`' : '`latest`', inline: true },
+        { name: 'Status', value: '🟢 Live', inline: true }
+      )
+      .setFooter({ text: 'Scorpion', iconURL: LOGO })
+      .setTimestamp();
+
+    const payload = { embeds: [embed] };
+    if (ping) payload.content = '@here';
+
+    await channel.send(payload);
+    await i.reply({ content: '✅ Announcement posted in <#' + LOADER_ANNOUNCE_CHANNEL_ID + '>.', ephemeral: true });
+  }
+
   async function handleInteraction(i) {
     if (!i.isChatInputCommand()) return false;
 
     const name = i.commandName;
-    const known = ['keygen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten'];
+    const known = ['keygen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
     if (known.indexOf(name) === -1) return false;
 
     if (!KEY_ADMIN_IDS.has(i.user.id)) {
@@ -742,6 +789,7 @@ function createKeySystem(opts) {
       else if (name === 'pause') await cmdPause(i);
       else if (name === 'extend') await changeKeyTime(i, 1);
       else if (name === 'shorten') await changeKeyTime(i, -1);
+      else if (name === 'newloader') await cmdNewLoader(i);
     } catch (e) {
       console.error('key command ' + name + ':', e && e.message);
       try {
