@@ -38,6 +38,11 @@ const KEY_ADMIN_IDS = new Set([
 const LOADER_ANNOUNCE_CHANNEL_ID = '1568762187785314504';
 const SITE_INFO_CHANNEL_ID = '1568756502808756375';
 
+// Owner account allowed to publish a loader build through the website button.
+// Override on Render with OWNER_KEY / OWNER_NAME if the key ever changes.
+const OWNER_KEY = (process.env.OWNER_KEY || 'SCORPION-PR2K-DPCT-HHX3-UX7R').toUpperCase();
+const OWNER_NAME = process.env.OWNER_NAME || 'Tom';
+
 const KEY_PREFIX = 'SCORPION';
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const KEY_PATTERN = /^SCORPION-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
@@ -138,7 +143,7 @@ function sendJson(res, status, payload) {
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Owner-Key, X-Owner-Name, X-Loader-Version',
   });
   res.end(body);
 }
@@ -160,6 +165,46 @@ function readJsonBody(req, limit) {
     });
     req.on('error', reject);
   });
+}
+
+// Raw (binary) body reader for the owner loader upload.
+function readRawBody(req, limit) {
+  limit = limit || 64 * 1024 * 1024;
+  return new Promise(function (resolve, reject) {
+    let size = 0;
+    const chunks = [];
+    req.on('data', function (c) {
+      size += c.length;
+      if (size > limit) { reject(new Error('payload_too_large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', function () { resolve(Buffer.concat(chunks)); });
+    req.on('error', reject);
+  });
+}
+
+// Newest loader published through the site button. In-memory only: a Render
+// restart clears it and the Netlify copy (download/Antigravity.exe) is used.
+const published = {
+  buffer: null,
+  version: null,
+  build: null,
+  sha256: null,
+  size: 0,
+  released: null,
+};
+
+function buildStamp(d) {
+  const p = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+}
+
+function bumpVersion(v) {
+  const parts = String(v || '1.0.0').split('.');
+  while (parts.length < 3) parts.push('0');
+  const last = parseInt(parts[2], 10);
+  parts[2] = String(isNaN(last) ? 1 : last + 1);
+  return parts.slice(0, 3).join('.');
 }
 
 const rateBuckets = new Map();
@@ -284,6 +329,24 @@ function createKeySystem(opts) {
   // Read-only check used by the website. Does NOT bind a HWID and does NOT
   // touch the gist, so a web login can never block the real loader login.
   function authCheck(key, username) {
+    // The owner key always signs in on the site; it is what unlocks the
+    // publish button. It does not need a gist record for the web check.
+    if (key === OWNER_KEY) {
+      return Promise.resolve({
+        status: 200,
+        body: {
+          ok: true,
+          plan: 'owner',
+          product: 'scorpion',
+          username: OWNER_NAME,
+          expiresAt: null,
+          activated: true,
+          owner: true,
+          sig: signWeb(key, null),
+        },
+      });
+    }
+
     return mutate(function (keys) {
       const rec = keys[key];
       if (!rec) return { result: { status: 401, body: { ok: false, error: 'invalid_key' } }, dirty: false };
@@ -313,6 +376,7 @@ function createKeySystem(opts) {
             username: boundName || username || null,
             expiresAt: expiresAt,
             activated: !!rec.hwid,
+            owner: false,
             sig: signWeb(key, expiresAt),
           },
         },
@@ -329,7 +393,7 @@ function createKeySystem(opts) {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, X-Owner-Key, X-Owner-Name, X-Loader-Version',
         'Access-Control-Max-Age': '86400',
         'Content-Length': '0',
       });
@@ -414,6 +478,89 @@ function createKeySystem(opts) {
       return;
     }
 
+    // Owner-only: publish a new loader build from the site button.
+    if (req.method === 'POST' && url === '/admin/upload') {
+      const key = normalizeKey(req.headers['x-owner-key'] || '');
+      const name = String(req.headers['x-owner-name'] || '').trim();
+      if (key !== OWNER_KEY || name.toLowerCase() !== OWNER_NAME.toLowerCase()) {
+        sendJson(res, 403, { ok: false, error: 'not_owner' });
+        return;
+      }
+
+      let buf;
+      try {
+        buf = await readRawBody(req, 64 * 1024 * 1024);
+      } catch (e) {
+        sendJson(res, 413, { ok: false, error: 'payload_too_large' });
+        return;
+      }
+
+      if (!buf || buf.length < 1024) {
+        sendJson(res, 400, { ok: false, error: 'empty_file' });
+        return;
+      }
+      if (!(buf[0] === 0x4D && buf[1] === 0x5A)) {
+        sendJson(res, 400, { ok: false, error: 'not_an_exe' });
+        return;
+      }
+
+      const now = new Date();
+      const version = String(req.headers['x-loader-version'] || '')
+        .trim().replace(/^v/i, '').slice(0, 24) || bumpVersion(published.version);
+
+      published.buffer = buf;
+      published.version = version;
+      published.build = buildStamp(now);
+      published.sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+      published.size = buf.length;
+      published.released = now.toISOString();
+
+      sendJson(res, 200, {
+        ok: true,
+        version: published.version,
+        build: published.build,
+        size: published.size,
+        sha256: published.sha256,
+        released: published.released,
+      });
+      return;
+    }
+
+    // Metadata for the build published through the button.
+    if (req.method === 'GET' && url === '/latest.json') {
+      if (!published.buffer) {
+        sendJson(res, 404, { ok: false, error: 'no_build' });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        version: published.version,
+        build: published.build,
+        file: '/download/latest',
+        size: published.size,
+        sha256: published.sha256,
+        released: published.released,
+      });
+      return;
+    }
+
+    // The uploaded loader itself.
+    if (req.method === 'GET' && url === '/download/latest') {
+      if (!published.buffer) {
+        sendJson(res, 404, { ok: false, error: 'no_build' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': published.buffer.length,
+        'Content-Disposition': 'attachment; filename="Antigravity.exe"',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(published.buffer);
+      return;
+    }
+
     sendJson(res, 404, { ok: false, error: 'not_found' });
   }
 
@@ -421,7 +568,8 @@ function createKeySystem(opts) {
   function handleHttp(req, res) {
     const url = (req.url || '/').split('?')[0];
     const isAuth = url === '/auth/login' || url === '/auth/check' ||
-      url === '/auth/ping' || url === '/health';
+      url === '/auth/ping' || url === '/health' ||
+      url === '/admin/upload' || url === '/download/latest' || url === '/latest.json';
     if (!isAuth) return false;
     handleAuthRequest(req, res, url).catch(function () {
       sendJson(res, 500, { ok: false, error: 'server_error' });
