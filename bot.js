@@ -655,7 +655,7 @@ function createKeySystem(opts) {
     });
   }
 
-  // NIEUW: HWID reset door staff (ticket) — geeft record terug of foutcode
+  // HWID reset door staff (ticket modal) — geeft record terug of foutcode
   async function resetHwidByKey(rawKey) {
     const key = normalizeKey(rawKey);
     if (!KEY_PATTERN.test(key)) return { ok: false, error: 'invalid_key_format' };
@@ -715,7 +715,7 @@ const KEY_OVERVIEW_CHANNEL_ID = '1570948087671820310';
 const WELCOME_CHANNEL_ID = '1565405396527489134';
 const STATUS_INTERVAL = 8000;
 
-// NIEUW: HWID reset log + categorie
+// HWID reset log + categorie
 const HWID_RESET_LOG_CHANNEL_ID = process.env.HWID_RESET_LOG_CHANNEL_ID || '1568756706371051531';
 const HWID_RESET_CATEGORY_ID = '1570957934559502386';
 
@@ -905,7 +905,6 @@ async function readGist() {
     rulesMessageId: parsed.rulesMessageId || null,
     keyOverviewMessageId: parsed.keyOverviewMessageId || null,
     keys: parsed.keys || {},
-    // NIEUW: hwid reset verzoeken geschiedenis
     hwidResetRequests: parsed.hwidResetRequests || [],
   };
 }
@@ -1317,8 +1316,6 @@ function buildKeyOverviewEmbeds(keys) {
     .setFooter({ text: 'Scorpion', iconURL: LOGO })
     .setTimestamp();
 
-  // (hidden) tekst weggehaald — revoked wordt niet meer als apart veld getoond
-
   const embeds = [summary];
 
   const MAX = 3800;
@@ -1367,6 +1364,7 @@ async function updateKeyOverview() {
 }
 
 function startKeyOverviewInterval() { updateKeyOverview(); setInterval(updateKeyOverview, 60000); }
+
 // ===== Product Paneel =====
 function buildProductPanelEmbed(products) {
   const list = Object.entries(products);
@@ -1791,7 +1789,7 @@ async function setupTicketPanel() {
         { label: 'Support', value: 'support', emoji: '🎫' },
         { label: 'Purchase', value: 'purchase', emoji: '🛒' },
         { label: 'Bug', value: 'bug', emoji: '⚠️' },
-        // NIEUW: HWID Reset optie in ticket paneel
+        // HWID Reset optie in ticket paneel
         { label: 'HWID Reset', value: 'hwidreset', emoji: '🔄' },
       ]);
     const row = new ActionRowBuilder().addComponents(menu);
@@ -1819,7 +1817,7 @@ async function setNotLegitStatus(channelId, status) {
   if (n[channelId]) { n[channelId].status = status; n[channelId].updatedAt = Date.now(); await saveNotLegitTickets(n); }
 }
 
-// ===== HWID reset verzoeken (nieuw) =====
+// ===== HWID reset verzoeken =====
 const getHwidResetRequests = async () => (await readGist()).hwidResetRequests || [];
 async function saveHwidResetRequests(list) { const d = await readGist(); d.hwidResetRequests = list; await writeGist(d); }
 async function addHwidResetRequest(entry) {
@@ -1875,14 +1873,14 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
     embed.addFields({ name: 'Question', value: extraData.question, inline: false });
   }
 
+  // Alleen Close knop — HWID reset knop is verwijderd
   const closeRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger),
-    // NIEUW: HWID reset knop in elk ticket
-    new ButtonBuilder().setCustomId('ticket_hwid_reset').setLabel('Reset HWID').setEmoji('🔄').setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
   );
   await ticketChannel.send({ content: `<@${user.id}> <@&${TICKET_TAG_ROLE_ID}>`, embeds: [embed], components: [closeRow] });
   return ticketChannel;
 }
+
 
 // ===== Interaction handler =====
 client.on('interactionCreate', async (i) => {
@@ -2295,7 +2293,7 @@ client.on('interactionCreate', async (i) => {
         });
       }
 
-      // NIEUW: HWID Reset — direct een modal met key + reden
+      // HWID Reset — direct een modal met key + reden
       if (choice === 'hwidreset') {
         const tickets = await getTickets();
         if (Object.values(tickets).find(t => t.userId === i.user.id)) {
@@ -2412,7 +2410,7 @@ client.on('interactionCreate', async (i) => {
       return i.update({ content: `✅ Product **${productName}** removed.`, components: [] });
     }
 
-    // NIEUW: rename product — select -> modal
+    // Rename product — select -> modal
     if (i.customId === 'product_rename_select') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const productName = i.values[0];
@@ -2459,7 +2457,7 @@ client.on('interactionCreate', async (i) => {
       } catch (e) { return i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
     }
 
-    // NIEUW: rename product modal
+    // Rename product modal
     if (i.customId.startsWith('product_rename_modal_')) {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const oldName = decodeURIComponent(i.customId.replace('product_rename_modal_', ''));
@@ -2513,7 +2511,7 @@ client.on('interactionCreate', async (i) => {
       } catch (e) { return i.reply({ content: `Error: ${e.message}`, ephemeral: true }); }
     }
 
-    // NIEUW: HWID reset modal (vanuit ticket knop of via dropdown)
+    // HWID reset modal (via dropdown)
     if (i.customId === 'modal_hwid_reset') {
       const rawKey = i.fields.getTextInputValue('hwid_key');
       const reason = i.fields.getTextInputValue('hwid_reason').trim();
@@ -2618,31 +2616,6 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Buttons =====
   if (i.isButton()) {
-    // NIEUW: HWID reset knop in elk ticket
-    if (i.customId === 'ticket_hwid_reset') {
-      const modal = new ModalBuilder().setCustomId('modal_hwid_reset').setTitle('HWID Reset');
-      const input1 = new TextInputBuilder()
-        .setCustomId('hwid_key')
-        .setLabel('Your license key')
-        .setPlaceholder('SCORPION-XXXX-XXXX-XXXX-XXXX')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMinLength(10)
-        .setMaxLength(64);
-      const input2 = new TextInputBuilder()
-        .setCustomId('hwid_reason')
-        .setLabel('Reason for HWID reset')
-        .setPlaceholder('e.g. new PC, reinstalled Windows...')
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMaxLength(500);
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(input1),
-        new ActionRowBuilder().addComponents(input2)
-      );
-      return i.showModal(modal);
-    }
-
     if (i.customId.startsWith('confirm_delivery_')) {
       const parts = i.customId.split('_');
       const customerId = parts[2];
@@ -2653,7 +2626,6 @@ client.on('interactionCreate', async (i) => {
       await i.deferReply({ ephemeral: true });
 
       try {
-        const guild = await client.guilds.fetch(GUILD_ID);
         const customerUser = await client.users.fetch(customerId).catch(() => i.user);
 
         let reviewNum = 1;
@@ -2725,7 +2697,7 @@ client.on('interactionCreate', async (i) => {
       return i.reply({ content: 'Which product do you want to remove?', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
     }
 
-    // NIEUW: rename knop
+    // Rename knop
     if (i.customId === 'product_rename') {
       if (!i.member.roles.cache.has(PURCHASE_ROLE_ID)) return i.reply({ content: 'No permission.', ephemeral: true });
       const products = await getProducts();
