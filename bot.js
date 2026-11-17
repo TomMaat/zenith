@@ -20,7 +20,7 @@ const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551
 const PORT = process.env.PORT || 3000;
 
 // ============================================================================
-//  License keys  -  HWID bound
+//  License keys  -  FiveM only  -  HWID bound
 //  Storage: the same GitHub gist the bot already uses ("keys" field).
 //  API:     POST /auth/login   { "key": "SCORPION-....", "hwid": "<hash>" }
 //           GET  /auth/ping
@@ -47,45 +47,28 @@ const KEY_PREFIX = 'SCORPION';
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const KEY_PATTERN = /^SCORPION-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
-// Plan -> duration. null = lifetime.
+// Plan -> duration. null = lifetime. FiveM only.
 const PLAN_MS = {
-  '1 day': 1 * 24 * 60 * 60 * 1000,
   '1 week': 7 * 24 * 60 * 60 * 1000,
   '1 month': 30.5 * 24 * 60 * 60 * 1000,
-  '3 months': 91.5 * 24 * 60 * 60 * 1000,
   'lifetime': null,
 };
 
 const PLAN_CHOICES = [
-  { name: '1 day', value: '1 day' },
   { name: '1 week', value: '1 week' },
   { name: '1 month', value: '1 month' },
-  { name: '3 months', value: '3 months' },
   { name: 'Lifetime', value: 'lifetime' },
 ];
 
-// Products that can be licensed. Every key belongs to exactly one product, so
-// a CS2 key cannot sign in to the FiveM loader and the other way round.
-// The owner can change the allowed plans and the download per product from the
-// website ("Manage products").
-const PRODUCT_DEFAULT = {
-  fivem: {
-    name: 'FiveM',
-    plans: ['1 week', '1 month', 'lifetime'],
-    file: 'download/Antigravity.exe',
-    exe: 'Antigravity.exe',
-  },
-  cs2: {
-    name: 'CS2',
-    plans: ['1 month', 'lifetime'],
-    file: 'download/scorpion.exe',
-    exe: 'scorpion.exe',
-  },
+// The one and only product. Kept as a small object so the download endpoint
+// and the key commands all use the same name/exe without a product catalog.
+const FIVEM = {
+  slug: 'fivem',
+  name: 'FiveM',
+  plans: ['1 week', '1 month', 'lifetime'],
+  exe: 'Antigravity.exe',
+  file: 'download/Antigravity.exe',
 };
-
-function defaultCatalog() {
-  return JSON.parse(JSON.stringify(PRODUCT_DEFAULT));
-}
 
 function isKnownPlan(plan) {
   return Object.prototype.hasOwnProperty.call(PLAN_MS, plan);
@@ -138,10 +121,9 @@ function maskHwid(hwid) {
   return hwid.slice(0, 12) + '...' + hwid.slice(-4);
 }
 
-function newKeyRecord(plan, product, createdBy, note) {
+function newKeyRecord(plan, createdBy, note) {
   return {
     plan: plan,
-    product: product || null,
     hwid: null,
     username: null,
     createdBy: createdBy,
@@ -214,24 +196,16 @@ function readRawBody(req, limit) {
   });
 }
 
-// Newest loader published through the site button, one slot per product slug.
-// In-memory only: a Render restart clears it and the Netlify copy
-// (download/<product>) is used instead.
-const publishedByProduct = Object.create(null);
-
-function publishedSlot(slug) {
-  if (!publishedByProduct[slug]) {
-    publishedByProduct[slug] = {
-      buffer: null,
-      version: null,
-      build: null,
-      sha256: null,
-      size: 0,
-      released: null,
-    };
-  }
-  return publishedByProduct[slug];
-}
+// Newest loader published through the site button. In-memory only: a Render
+// restart clears it and the Netlify copy (download/Antigravity.exe) is used.
+const publishedSlot = {
+  buffer: null,
+  version: null,
+  build: null,
+  sha256: null,
+  size: 0,
+  released: null,
+};
 
 function buildStamp(d) {
   const p = function (n) { return String(n).padStart(2, '0'); };
@@ -303,72 +277,16 @@ function createKeySystem(opts) {
     return task;
   }
 
-  // ---- products -----------------------------------------------------------
+  // ---- auth ----------------------------------------------------------------
 
-  function catalogFrom(data) {
-    const c = data && data.catalog;
-    if (!c || typeof c !== 'object' || !Object.keys(c).length) return defaultCatalog();
-    return c;
-  }
-
-  function keyProductOf(rec) {
-    return (rec && rec.product) || 'fivem';
-  }
-
-  // Catalog writes go through the same lock as the keys, so a website save and
-  // a login cannot overwrite each other.
-  function updateCatalog(mutator) {
-    return mutate(function (keys, data) {
-      const catalog = catalogFrom(data);
-      mutator(catalog);
-      data.catalog = catalog;
-      return { result: catalog, dirty: true };
-    });
-  }
-
-  function plansFor(catalog, slug) {
-    const entry = catalog[slug];
-    if (!entry) return [];
-    const plans = Array.isArray(entry.plans) ? entry.plans : [];
-    return plans.filter(isKnownPlan);
-  }
-
-  function queryParam(req, name) {
-    const raw = req.url || '';
-    const q = raw.indexOf('?');
-    if (q === -1) return '';
-    try {
-      return new URLSearchParams(raw.slice(q + 1)).get(name) || '';
-    } catch (e) {
-      return '';
-    }
-  }
-
-  // Product of a publish/download request: header first, then ?product=,
-  // defaulting to the FiveM loader so old links keep working.
-  function productFrom(req, catalog) {
-    const raw = String(req.headers['x-product'] || queryParam(req, 'product') || '')
-      .trim().toLowerCase();
-    const slug = raw || 'fivem';
-    return catalog[slug] ? slug : '';
-  }
-
-  // ---- auth ---------------------------------------------------------------
-
-  function authLogin(key, hwid, username, product) {
+  function authLogin(key, hwid, username) {
     return mutate(function (keys) {
       const rec = keys[key];
       if (!rec) return { result: { status: 401, body: { ok: false, error: 'invalid_key' } }, dirty: false };
       if (rec.banned) return { result: { status: 403, body: { ok: false, error: 'revoked' } }, dirty: false };
-
-      // Product scoping: a key only works in the loader it was made for.
-      const recProduct = keyProductOf(rec);
-      if (product && product !== recProduct) {
-        return { result: { status: 403, body: { ok: false, error: 'wrong_product', product: recProduct } }, dirty: false };
-      }
+      if (rec.paused) return { result: { status: 403, body: { ok: false, error: 'paused' } }, dirty: false };
 
       const now = Date.now();
-      if (rec.paused) return { result: { status: 403, body: { ok: false, error: 'paused' } }, dirty: false };
       if (rec.expiresAt !== null && rec.expiresAt !== undefined && now > rec.expiresAt) {
         return { result: { status: 403, body: { ok: false, error: 'expired' } }, dirty: false };
       }
@@ -410,7 +328,6 @@ function createKeySystem(opts) {
           body: {
             ok: true,
             plan: rec.plan,
-            product: recProduct,
             expiresAt: expiresAt,
             activatedAt: rec.activatedAt || null,
             sig: signAuth(key, hwid, expiresAt),
@@ -423,16 +340,15 @@ function createKeySystem(opts) {
 
   // Read-only check used by the website. Does NOT bind a HWID and does NOT
   // touch the gist, so a web login can never block the real loader login.
-  function authCheck(key, username, product) {
+  function authCheck(key, username) {
     // The owner key always signs in on the site; it is what unlocks the
-    // "Manage products" panel. It does not need a gist record for the web check.
+    // "Manage build" panel. It does not need a gist record for the web check.
     if (key === OWNER_KEY) {
       return Promise.resolve({
         status: 200,
         body: {
           ok: true,
           plan: 'owner',
-          product: 'owner',
           username: OWNER_NAME,
           expiresAt: null,
           activated: true,
@@ -447,11 +363,6 @@ function createKeySystem(opts) {
       if (!rec) return { result: { status: 401, body: { ok: false, error: 'invalid_key' } }, dirty: false };
       if (rec.banned) return { result: { status: 403, body: { ok: false, error: 'revoked' } }, dirty: false };
       if (rec.paused) return { result: { status: 403, body: { ok: false, error: 'paused' } }, dirty: false };
-
-      const recProduct = keyProductOf(rec);
-      if (product && product !== recProduct) {
-        return { result: { status: 403, body: { ok: false, error: 'wrong_product', product: recProduct } }, dirty: false };
-      }
 
       const now = Date.now();
       if (rec.expiresAt !== null && rec.expiresAt !== undefined && now > rec.expiresAt) {
@@ -472,7 +383,6 @@ function createKeySystem(opts) {
           body: {
             ok: true,
             plan: rec.plan || null,
-            product: recProduct,
             username: boundName || username || null,
             expiresAt: expiresAt,
             activated: !!rec.hwid,
@@ -485,7 +395,7 @@ function createKeySystem(opts) {
     });
   }
 
-  // ---- http ---------------------------------------------------------------
+  // ---- http ----------------------------------------------------------------
 
   async function handleAuthRequest(req, res, url) {
     // CORS preflight from the Netlify site.
@@ -525,7 +435,6 @@ function createKeySystem(opts) {
       const username = typeof body.username === 'string'
         ? body.username.trim().slice(0, 64)
         : '';
-      const product = typeof body.product === 'string' ? body.product.trim().toLowerCase() : '';
 
       if (!KEY_PATTERN.test(key)) {
         sendJson(res, 400, { ok: false, error: 'invalid_key_format' });
@@ -533,7 +442,7 @@ function createKeySystem(opts) {
       }
 
       try {
-        const out = await authCheck(key, username, product || null);
+        const out = await authCheck(key, username);
         sendJson(res, out.status, out.body);
       } catch (e) {
         sendJson(res, 500, { ok: false, error: 'server_error' });
@@ -541,7 +450,7 @@ function createKeySystem(opts) {
       return;
     }
 
-    if (req.method === 'POST' && url === '/auth/login') {
+    if (req.method === 'POST' && (url === '/auth/login' || url === '/auth')) {
       if (isRateLimited(clientIp(req))) {
         sendJson(res, 429, { ok: false, error: 'rate_limited' });
         return;
@@ -560,10 +469,6 @@ function createKeySystem(opts) {
       const username = typeof body.username === 'string'
         ? body.username.trim().slice(0, 64)
         : '';
-      // Older FiveM loaders do not send a product; they are the fivem client.
-      const product = typeof body.product === 'string' && body.product.trim()
-        ? body.product.trim().toLowerCase()
-        : 'fivem';
 
       if (!KEY_PATTERN.test(key)) {
         sendJson(res, 400, { ok: false, error: 'invalid_key_format' });
@@ -575,7 +480,7 @@ function createKeySystem(opts) {
       }
 
       try {
-        const out = await authLogin(key, hwid, username, product);
+        const out = await authLogin(key, hwid, username);
         sendJson(res, out.status, out.body);
       } catch (e) {
         sendJson(res, 500, { ok: false, error: 'server_error' });
@@ -583,19 +488,12 @@ function createKeySystem(opts) {
       return;
     }
 
-    // Owner-only: publish a loader build for one product.
+    // Owner-only: publish a new FiveM loader build from the site button.
     if (req.method === 'POST' && url === '/admin/upload') {
       const key = normalizeKey(req.headers['x-owner-key'] || '');
       const name = String(req.headers['x-owner-name'] || '').trim();
       if (key !== OWNER_KEY || name.toLowerCase() !== OWNER_NAME.toLowerCase()) {
         sendJson(res, 403, { ok: false, error: 'not_owner' });
-        return;
-      }
-
-      const catalog = catalogFrom(await readGist());
-      const slug = productFrom(req, catalog);
-      if (!slug) {
-        sendJson(res, 400, { ok: false, error: 'unknown_product' });
         return;
       }
 
@@ -616,167 +514,84 @@ function createKeySystem(opts) {
         return;
       }
 
-      const slot = publishedSlot(slug);
       const now = new Date();
       const version = String(req.headers['x-loader-version'] || '')
-        .trim().replace(/^v/i, '').slice(0, 24) || bumpVersion(slot.version);
+        .trim().replace(/^v/i, '').slice(0, 24) || bumpVersion(publishedSlot.version);
 
-      slot.buffer = buf;
-      slot.version = version;
-      slot.build = buildStamp(now);
-      slot.sha256 = crypto.createHash('sha256').update(buf).digest('hex');
-      slot.size = buf.length;
-      slot.released = now.toISOString();
+      publishedSlot.buffer = buf;
+      publishedSlot.version = version;
+      publishedSlot.build = buildStamp(now);
+      publishedSlot.sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+      publishedSlot.size = buf.length;
+      publishedSlot.released = now.toISOString();
 
       sendJson(res, 200, {
         ok: true,
-        product: slug,
-        version: slot.version,
-        build: slot.build,
-        size: slot.size,
-        sha256: slot.sha256,
-        released: slot.released,
+        version: publishedSlot.version,
+        build: publishedSlot.build,
+        size: publishedSlot.size,
+        sha256: publishedSlot.sha256,
+        released: publishedSlot.released,
       });
       return;
     }
 
-    // Owner-only: change the name / allowed plans / file of a product.
-    if (req.method === 'POST' && url === '/admin/product') {
-      const key = normalizeKey(req.headers['x-owner-key'] || '');
-      const name = String(req.headers['x-owner-name'] || '').trim();
-      if (key !== OWNER_KEY || name.toLowerCase() !== OWNER_NAME.toLowerCase()) {
-        sendJson(res, 403, { ok: false, error: 'not_owner' });
-        return;
-      }
-
-      let body;
-      try {
-        body = await readJsonBody(req);
-      } catch (e) {
-        sendJson(res, 400, { ok: false, error: 'bad_request' });
-        return;
-      }
-
-      const slug = String(body.slug || '').trim().toLowerCase();
-      if (!/^[a-z0-9_-]{2,32}$/.test(slug)) {
-        sendJson(res, 400, { ok: false, error: 'invalid_slug' });
-        return;
-      }
-
-      let plans = null;
-      if (body.plans !== undefined) {
-        plans = Array.isArray(body.plans) ? body.plans.filter(isKnownPlan) : [];
-        if (!plans.length) {
-          sendJson(res, 400, { ok: false, error: 'invalid_plans' });
-          return;
-        }
-      }
-
-      const displayName = typeof body.name === 'string' ? body.name.trim().slice(0, 40) : '';
-      const exe = typeof body.exe === 'string'
-        ? body.exe.trim().replace(/[^A-Za-z0-9._-]/g, '').slice(0, 64)
-        : '';
-
-      const catalog = await updateCatalog(function (c) {
-        const entry = c[slug] || {
-          name: displayName || slug.toUpperCase(),
-          plans: ['1 month', 'lifetime'],
-          file: 'download/' + slug + '.exe',
-          exe: slug + '.exe',
-        };
-        if (displayName) entry.name = displayName;
-        if (plans) entry.plans = plans;
-        if (exe) {
-          entry.exe = exe;
-          entry.file = 'download/' + exe;
-        }
-        if (!Array.isArray(entry.plans) || !entry.plans.length) entry.plans = ['1 month', 'lifetime'];
-        c[slug] = entry;
-      });
-
-      sendJson(res, 200, { ok: true, slug: slug, product: catalog[slug] });
-      return;
-    }
-
-    // Catalog + latest published build per product (used by the site).
+    // Single FiveM catalog (kept for older site links).
     if (req.method === 'GET' && url === '/catalog.json') {
-      const catalog = catalogFrom(await readGist());
-      const products = Object.keys(catalog).map(function (slug) {
-        const entry = catalog[slug] || {};
-        const slot = publishedSlot(slug);
-        return {
-          slug: slug,
-          name: entry.name || slug,
-          plans: plansFor(catalog, slug),
-          exe: entry.exe || (slug + '.exe'),
-          file: entry.file || ('download/' + slug + '.exe'),
-          published: slot.buffer ? {
-            version: slot.version,
-            build: slot.build,
-            size: slot.size,
-            sha256: slot.sha256,
-            released: slot.released,
-            url: '/download/' + slug,
-          } : null,
-        };
-      });
       sendJson(res, 200, {
         ok: true,
         plans: PLAN_CHOICES.map(function (c) { return c.value; }),
-        products: products,
+        products: [{
+          slug: FIVEM.slug,
+          name: FIVEM.name,
+          plans: FIVEM.plans.slice(),
+          exe: FIVEM.exe,
+          file: FIVEM.file,
+          published: publishedSlot.buffer ? {
+            version: publishedSlot.version,
+            build: publishedSlot.build,
+            size: publishedSlot.size,
+            sha256: publishedSlot.sha256,
+            released: publishedSlot.released,
+            url: '/download/latest',
+          } : null,
+        }],
       });
       return;
     }
 
     // Metadata for the build published through the button.
     if (req.method === 'GET' && url === '/latest.json') {
-      const catalog = catalogFrom(await readGist());
-      const slug = productFrom(req, catalog);
-      if (!slug) {
-        sendJson(res, 400, { ok: false, error: 'unknown_product' });
-        return;
-      }
-      const slot = publishedSlot(slug);
-      if (!slot.buffer) {
+      if (!publishedSlot.buffer) {
         sendJson(res, 404, { ok: false, error: 'no_build' });
         return;
       }
       sendJson(res, 200, {
         ok: true,
-        product: slug,
-        version: slot.version,
-        build: slot.build,
-        file: '/download/' + slug,
-        size: slot.size,
-        sha256: slot.sha256,
-        released: slot.released,
+        version: publishedSlot.version,
+        build: publishedSlot.build,
+        file: '/download/latest',
+        size: publishedSlot.size,
+        sha256: publishedSlot.sha256,
+        released: publishedSlot.released,
       });
       return;
     }
 
-    // The uploaded loader itself, one route per product.
-    const download = url.match(/^\/download\/([a-z0-9_-]{2,32})$/);
-    if (req.method === 'GET' && download) {
-      const catalog = catalogFrom(await readGist());
-      const slug = download[1] === 'latest' ? 'fivem' : download[1];
-      if (!catalog[slug]) {
-        sendJson(res, 404, { ok: false, error: 'unknown_product' });
-        return;
-      }
-      const slot = publishedSlot(slug);
-      if (!slot.buffer) {
+    // The uploaded FiveM loader itself.
+    if (req.method === 'GET' && (url === '/download/latest' || url === '/download/fivem')) {
+      if (!publishedSlot.buffer) {
         sendJson(res, 404, { ok: false, error: 'no_build' });
         return;
       }
-      const exe = catalog[slug].exe || (slug + '.exe');
       res.writeHead(200, {
         'Content-Type': 'application/octet-stream',
-        'Content-Length': slot.buffer.length,
-        'Content-Disposition': 'attachment; filename="' + exe + '"',
+        'Content-Length': publishedSlot.buffer.length,
+        'Content-Disposition': 'attachment; filename="' + FIVEM.exe + '"',
         'Cache-Control': 'no-store',
         'Access-Control-Allow-Origin': '*',
       });
-      res.end(slot.buffer);
+      res.end(publishedSlot.buffer);
       return;
     }
 
@@ -786,11 +601,10 @@ function createKeySystem(opts) {
   // Synchronous router: returns true when the request belongs to the auth API.
   function handleHttp(req, res) {
     const url = (req.url || '/').split('?')[0];
-    const isAuth = url === '/auth/login' || url === '/auth/check' ||
+    const isAuth = url === '/auth/login' || url === '/auth' || url === '/auth/check' ||
       url === '/auth/ping' || url === '/health' ||
-      url === '/admin/upload' || url === '/admin/product' ||
-      url === '/latest.json' || url === '/catalog.json' ||
-      /^\/download\/[a-z0-9_-]{2,32}$/.test(url);
+      url === '/admin/upload' || url === '/catalog.json' ||
+      url === '/latest.json' || url === '/download/latest' || url === '/download/fivem';
     if (!isAuth) return false;
     handleAuthRequest(req, res, url).catch(function () {
       sendJson(res, 500, { ok: false, error: 'server_error' });
@@ -803,9 +617,8 @@ function createKeySystem(opts) {
   const commands = [
     {
       name: 'keygen',
-      description: 'Generate license keys for a product',
+      description: 'Generate FiveM license keys',
       options: [
-        { name: 'product', description: 'Product the keys belong to', type: 3, required: true, autocomplete: true },
         { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: PLAN_CHOICES },
         { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
         { name: 'note', description: 'Optional note', type: 3, required: false },
@@ -833,7 +646,6 @@ function createKeySystem(opts) {
       name: 'keylist',
       description: 'List license keys',
       options: [
-        { name: 'product', description: 'Filter by product', type: 3, required: false, autocomplete: true },
         { name: 'plan', description: 'Filter by plan', type: 3, required: false, choices: PLAN_CHOICES },
       ],
     },
@@ -862,7 +674,6 @@ function createKeySystem(opts) {
       name: 'newloader',
       description: 'Post the "new loader available" announcement (owner only)',
       options: [
-        { name: 'product', description: 'Which product (default: FiveM)', type: 3, required: false, autocomplete: true },
         { name: 'version', description: 'Version you just uploaded, e.g. 1.0.1', type: 3, required: false },
         { name: 'ping', description: 'Ping @here with the announcement', type: 5, required: false },
       ],
@@ -874,35 +685,12 @@ function createKeySystem(opts) {
   }
 
   async function cmdKeygen(i) {
-    const productRaw = (i.options.getString('product') || '').trim().toLowerCase();
     const plan = i.options.getString('plan');
     const amount = i.options.getInteger('amount') || 1;
     const note = i.options.getString('note') || '';
 
-    const catalog = catalogFrom(await readGist());
-    const slug = Object.keys(catalog).find(function (s) {
-      return s === productRaw || String(catalog[s].name || '').toLowerCase() === productRaw;
-    });
-
-    if (!slug) {
-      await i.reply({
-        content: 'Unknown product. Use one of: ' + Object.keys(catalog).join(', '),
-        ephemeral: true,
-      });
-      return;
-    }
-    if (!isKnownPlan(plan)) {
-      await i.reply({ content: 'Unknown plan.', ephemeral: true });
-      return;
-    }
-
-    const allowed = plansFor(catalog, slug);
-    if (allowed.indexOf(plan) === -1) {
-      await i.reply({
-        content: '`' + plan + '` is not enabled for **' + (catalog[slug].name || slug) +
-          '**. Allowed: ' + (allowed.join(', ') || 'none') + '.',
-        ephemeral: true,
-      });
+    if (!isKnownPlan(plan) || FIVEM.plans.indexOf(plan) === -1) {
+      await i.reply({ content: 'Unknown plan. Use: ' + FIVEM.plans.join(', ') + '.', ephemeral: true });
       return;
     }
 
@@ -913,15 +701,14 @@ function createKeySystem(opts) {
       for (let n = 0; n < amount; n++) {
         let key = generateKey();
         while (keys[key]) key = generateKey();
-        keys[key] = newKeyRecord(plan, slug, i.user.id, note);
+        keys[key] = newKeyRecord(plan, i.user.id, note);
         list.push(key);
       }
       return { result: list, dirty: true };
     });
 
     await i.editReply({
-      embeds: [keyEmbed('🔑 Keys generated', [
-        { name: 'Product', value: (catalog[slug].name || slug), inline: true },
+      embeds: [keyEmbed('🔑 FiveM keys generated', [
         { name: 'Plan', value: plan, inline: true },
         { name: 'Amount', value: String(created.length), inline: true },
         { name: 'Keys', value: '```\n' + created.join('\n') + '\n```', inline: false },
@@ -944,7 +731,6 @@ function createKeySystem(opts) {
       embeds: [keyEmbed('🔑 ' + key, [
         { name: 'Status', value: keyStatusOf(rec), inline: true },
         { name: 'Plan', value: rec.plan || '?', inline: true },
-        { name: 'Product', value: rec.product || '-', inline: true },
         { name: 'Username', value: rec.username || '-', inline: true },
         { name: 'HWID', value: '`' + maskHwid(rec.hwid) + '`', inline: false },
         { name: 'Created', value: formatStamp(rec.createdAt), inline: true },
@@ -1000,21 +786,13 @@ function createKeySystem(opts) {
 
   async function cmdKeylist(i) {
     const planFilter = i.options.getString('plan');
-    const productRaw = (i.options.getString('product') || '').trim().toLowerCase();
     await i.deferReply({ ephemeral: true });
 
     const data = await readGist();
     const all = data.keys || {};
-    const catalog = catalogFrom(data);
-    const productFilter = productRaw
-      ? Object.keys(catalog).find(function (s) {
-        return s === productRaw || String(catalog[s].name || '').toLowerCase() === productRaw;
-      }) || productRaw
-      : null;
 
     const entries = Object.entries(all)
       .filter(function (e) { return !planFilter || (e[1].plan === planFilter); })
-      .filter(function (e) { return !productFilter || keyProductOf(e[1]) === productFilter; })
       .sort(function (a, b) { return (b[1].createdAt || 0) - (a[1].createdAt || 0); });
 
     if (!entries.length) {
@@ -1145,23 +923,6 @@ function createKeySystem(opts) {
   async function cmdNewLoader(i) {
     const version = (i.options.getString('version') || '').trim().replace(/^v/i, '').slice(0, 24);
     const ping = i.options.getBoolean('ping') === true;
-    const productRaw = (i.options.getString('product') || '').trim().toLowerCase();
-
-    const catalog = catalogFrom(await readGist());
-    const slug = productRaw
-      ? Object.keys(catalog).find(function (s) {
-        return s === productRaw || String(catalog[s].name || '').toLowerCase() === productRaw;
-      })
-      : 'fivem';
-
-    if (!slug) {
-      await i.reply({
-        content: 'Unknown product. Use one of: ' + Object.keys(catalog).join(', '),
-        ephemeral: true,
-      });
-      return;
-    }
-    const productName = catalog[slug].name || slug;
 
     const channel = await i.client.channels.fetch(LOADER_ANNOUNCE_CHANNEL_ID).catch(function () { return null; });
     if (!channel || !channel.isTextBased()) {
@@ -1174,12 +935,12 @@ function createKeySystem(opts) {
       .setColor(KEY_EMBED_COLOR)
       .setThumbnail(LOGO)
       .setDescription(
-        'A new **Scorpion** build is now live.\n\n' +
+        'A new **Scorpion** FiveM build is now live.\n\n' +
         '**Download** — the site can be found in <#' + SITE_INFO_CHANNEL_ID + '>.\n' +
         '**Access** — sign in with your name and license key.'
       )
       .addFields(
-        { name: 'Product', value: productName, inline: true },
+        { name: 'Product', value: FIVEM.name, inline: true },
         { name: 'Version', value: version ? '`v' + version + '`' : '`latest`', inline: true },
         { name: 'Status', value: '🟢 Live', inline: true }
       )
@@ -1228,21 +989,15 @@ function createKeySystem(opts) {
 
   // ---- used by /purchase --------------------------------------------------
 
-  async function registerKey(key, plan, product, createdBy) {
+  async function registerKey(key, plan, createdBy) {
     const normalized = normalizeKey(key);
     if (!KEY_PATTERN.test(normalized)) return { created: false, valid: false };
 
-    return mutate(function (keys, data) {
-      const catalog = catalogFrom(data);
-      const wanted = String(product || '').trim().toLowerCase();
-      const slug = Object.keys(catalog).find(function (s) {
-        return s === wanted || String(catalog[s].name || '').toLowerCase() === wanted;
-      }) || 'fivem';
-
+    return mutate(function (keys) {
       if (keys[normalized]) {
         return { result: { created: false, valid: true, record: keys[normalized] }, dirty: false };
       }
-      keys[normalized] = newKeyRecord(plan, slug, createdBy, 'created by /purchase');
+      keys[normalized] = newKeyRecord(plan, createdBy, 'created by /purchase');
       return { result: { created: true, valid: true, record: keys[normalized] }, dirty: true };
     });
   }
@@ -2473,29 +2228,11 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
   return ticketChannel;
 }
 
-
 // ===== Interaction handler =====
 client.on('interactionCreate', async (i) => {
   if (i.isAutocomplete()) {
     try {
       const focused = String(i.options.getFocused() || '').toLowerCase();
-      const catalogCommands = ['keygen', 'keylist', 'newloader'];
-
-      if (catalogCommands.indexOf(i.commandName) !== -1) {
-        const catalog = catalogFrom(await readGist());
-        const list = Object.keys(catalog)
-          .filter(function (s) {
-            return s.indexOf(focused) !== -1 ||
-              String(catalog[s].name || '').toLowerCase().indexOf(focused) !== -1;
-          })
-          .slice(0, 25)
-          .map(function (s) {
-            return { name: (catalog[s].name || s) + ' (' + s + ')', value: s };
-          });
-        await i.respond(list);
-        return;
-      }
-
       const products = await getProducts();
       const filtered = Object.keys(products)
         .filter(p => p.toLowerCase().includes(focused))
@@ -2538,7 +2275,7 @@ client.on('interactionCreate', async (i) => {
       if (roleId) await member.roles.add(roleId, `Purchase: ${productName} (${plan})`).catch(() => {});
       await member.roles.add(CUSTOMER_ROLE_ID, `Purchase: ${productName} (${plan})`).catch(() => {});
       // Make the delivered key usable by the auth API (HWID binds on first login).
-      await keyApi.registerKey(key, plan, productName, i.user.id).catch(() => {});
+      await keyApi.registerKey(key, plan, i.user.id).catch(() => {});
       const { endTime } = await addPurchase(targetUser.id, productName, plan, key, roleId);
       await updateOverview();
       const planText = plan === 'lifetime' ? 'Lifetime' : plan;
@@ -3145,7 +2882,7 @@ client.on('interactionCreate', async (i) => {
         }
 
         const rec = result.rec;
-        const product = rec.product || 'Onbekend';
+        const product = FIVEM.name;
 
         // Log in het logkanaal
         try {
