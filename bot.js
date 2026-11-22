@@ -20,8 +20,9 @@ const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551
 const PORT = process.env.PORT || 3000;
 
 // ============================================================================
-//  License keys  -  FiveM only  -  HWID bound
+//  License keys  -  per menu (FiveM, Rob Run)  -  HWID bound
 //  Storage: the same GitHub gist the bot already uses ("keys" field).
+//  Existing keys have no "menu" field and stay FiveM (kept as-is).
 //  API:     POST /auth/login   { "key": "SCORPION-....", "hwid": "<hash>" }
 //           GET  /auth/ping
 //  readGist/writeGist are function declarations, so they are hoisted and can be
@@ -47,7 +48,7 @@ const KEY_PREFIX = 'SCORPION';
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const KEY_PATTERN = /^SCORPION-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
-// Plan -> duration. null = lifetime. FiveM only.
+// Plan -> duration. null = lifetime.
 const PLAN_MS = {
   '1 week': 7 * 24 * 60 * 60 * 1000,
   '1 month': 30.5 * 24 * 60 * 60 * 1000,
@@ -60,8 +61,7 @@ const PLAN_CHOICES = [
   { name: 'Lifetime', value: 'lifetime' },
 ];
 
-// The one and only product. Kept as a small object so the download endpoint
-// and the key commands all use the same name/exe without a product catalog.
+// The downloadable FiveM loader (kept for the site / admin upload).
 const FIVEM = {
   slug: 'fivem',
   name: 'FiveM',
@@ -70,8 +70,20 @@ const FIVEM = {
   file: 'download/Antigravity.exe',
 };
 
+// Every menu has its own gen command and its own embed in the key channel.
+// Keys from the old single-menu system have no "menu" field -> FiveM.
+const MENUS = {
+  fivem: { slug: 'fivem', name: 'FiveM', title: 'Fivem Keys', command: 'fivemgen' },
+  rr:    { slug: 'rr',    name: 'Rob Run', title: 'Rob Run Keys', command: 'rrgen' },
+};
+
 function isKnownPlan(plan) {
   return Object.prototype.hasOwnProperty.call(PLAN_MS, plan);
+}
+
+function keyMenuOf(rec) {
+  const m = rec && rec.menu;
+  return MENUS[m] ? m : 'fivem';
 }
 
 const KEY_EMBED_COLOR = 0x2b2b2b;
@@ -121,8 +133,9 @@ function maskHwid(hwid) {
   return hwid.slice(0, 12) + '...' + hwid.slice(-4);
 }
 
-function newKeyRecord(plan, createdBy, note) {
+function newKeyRecord(menu, plan, createdBy, note) {
   return {
+    menu: menu,
     plan: plan,
     hwid: null,
     username: null,
@@ -616,8 +629,17 @@ function createKeySystem(opts) {
 
   const commands = [
     {
-      name: 'keygen',
+      name: 'fivemgen',
       description: 'Generate FiveM license keys',
+      options: [
+        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: PLAN_CHOICES },
+        { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
+        { name: 'note', description: 'Optional note', type: 3, required: false },
+      ],
+    },
+    {
+      name: 'rrgen',
+      description: 'Generate Rob Run license keys',
       options: [
         { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: PLAN_CHOICES },
         { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
@@ -684,7 +706,8 @@ function createKeySystem(opts) {
     return new EmbedBuilder().setTitle(title).setColor(KEY_EMBED_COLOR).addFields(fields);
   }
 
-  async function cmdKeygen(i) {
+  async function cmdGen(i, menuSlug) {
+    const menu = MENUS[menuSlug];
     const plan = i.options.getString('plan');
     const amount = i.options.getInteger('amount') || 1;
     const note = i.options.getString('note') || '';
@@ -701,14 +724,15 @@ function createKeySystem(opts) {
       for (let n = 0; n < amount; n++) {
         let key = generateKey();
         while (keys[key]) key = generateKey();
-        keys[key] = newKeyRecord(plan, i.user.id, note);
+        keys[key] = newKeyRecord(menu.slug, plan, i.user.id, note);
         list.push(key);
       }
       return { result: list, dirty: true };
     });
 
     await i.editReply({
-      embeds: [keyEmbed('🔑 FiveM keys generated', [
+      embeds: [keyEmbed('🔑 ' + menu.name + ' keys generated', [
+        { name: 'Menu', value: menu.name, inline: true },
         { name: 'Plan', value: plan, inline: true },
         { name: 'Amount', value: String(created.length), inline: true },
         { name: 'Keys', value: '```\n' + created.join('\n') + '\n```', inline: false },
@@ -730,6 +754,7 @@ function createKeySystem(opts) {
     await i.editReply({
       embeds: [keyEmbed('🔑 ' + key, [
         { name: 'Status', value: keyStatusOf(rec), inline: true },
+        { name: 'Menu', value: MENUS[keyMenuOf(rec)].name, inline: true },
         { name: 'Plan', value: rec.plan || '?', inline: true },
         { name: 'Username', value: rec.username || '-', inline: true },
         { name: 'HWID', value: '`' + maskHwid(rec.hwid) + '`', inline: false },
@@ -958,7 +983,7 @@ function createKeySystem(opts) {
     if (!i.isChatInputCommand()) return false;
 
     const name = i.commandName;
-    const known = ['keygen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
+    const known = ['fivemgen', 'rrgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
     if (known.indexOf(name) === -1) return false;
 
     if (!KEY_ADMIN_IDS.has(i.user.id)) {
@@ -967,7 +992,8 @@ function createKeySystem(opts) {
     }
 
     try {
-      if (name === 'keygen') await cmdKeygen(i);
+      if (name === 'fivemgen') await cmdGen(i, 'fivem');
+      else if (name === 'rrgen') await cmdGen(i, 'rr');
       else if (name === 'keyinfo') await cmdKeyinfo(i);
       else if (name === 'keyreset') await cmdKeyreset(i);
       else if (name === 'keyrevoke') await cmdKeyrevoke(i);
@@ -997,7 +1023,7 @@ function createKeySystem(opts) {
       if (keys[normalized]) {
         return { result: { created: false, valid: true, record: keys[normalized] }, dirty: false };
       }
-      keys[normalized] = newKeyRecord(plan, createdBy, 'created by /purchase');
+      keys[normalized] = newKeyRecord('fivem', plan, createdBy, 'created by /purchase');
       return { result: { created: true, valid: true, record: keys[normalized] }, dirty: true };
     });
   }
@@ -1251,6 +1277,7 @@ async function readGist() {
     productPanelMessageId: parsed.productPanelMessageId || null,
     rulesMessageId: parsed.rulesMessageId || null,
     keyOverviewMessageId: parsed.keyOverviewMessageId || null,
+    keyOverviewMessageIds: parsed.keyOverviewMessageIds || {},
     keys: parsed.keys || {},
     hwidResetRequests: parsed.hwidResetRequests || [],
   };
@@ -1611,8 +1638,18 @@ async function restartOverview() {
 function startOverviewInterval() { updateOverview(); setInterval(updateOverview, 60000); }
 
 // ===== Key overview =====
-const getKeyOverviewMessageId = async () => (await readGist()).keyOverviewMessageId;
-async function setKeyOverviewMessageId(id) { const d = await readGist(); d.keyOverviewMessageId = id; await writeGist(d); }
+// One message per menu in the key channel, each with its own embed and
+// (when needed) ◀ page ▶ buttons. Page state is kept in memory and survives
+// the 60s refresh; existing keys keep working (no menu field = FiveM).
+const KEY_PAGE_SIZE = 40;
+const keyOverviewPages = Object.create(null);
+
+async function setKeyOverviewMessageId(menuSlug, id) {
+  const d = await readGist();
+  if (!d.keyOverviewMessageIds || typeof d.keyOverviewMessageIds !== 'object') d.keyOverviewMessageIds = {};
+  d.keyOverviewMessageIds[menuSlug] = id;
+  await writeGist(d);
+}
 
 function keyStatusLabel(rec) {
   if (rec.banned) return '🚫 revoked';
@@ -1633,59 +1670,66 @@ function keyLineText(key, rec) {
   return '`' + key + '` · ' + keyStatusLabel(rec) + ' · ' + plan + ' · ' + user + ' · ' + time;
 }
 
-function buildKeyOverviewEmbeds(keys) {
-  const all = Object.entries(keys || {});
-  // Revoked keys zijn verborgen in de lijst (alleen telling in de header).
-  const revoked = all.filter(([, rec]) => rec.banned).length;
-  const entries = all
-    .filter(([, rec]) => !rec.banned)
+function keyEntriesForMenu(keys, menuSlug) {
+  return Object.entries(keys || {})
+    // Revoked keys blijven verborgen in de lijst (alleen de telling telt ze niet).
+    .filter(([, rec]) => keyMenuOf(rec) === menuSlug && !rec.banned)
     .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
+}
+
+function buildKeyOverviewPage(keys, menuSlug) {
+  const menu = MENUS[menuSlug];
+  const entries = keyEntriesForMenu(keys, menuSlug);
+  const pages = Math.max(1, Math.ceil(entries.length / KEY_PAGE_SIZE));
+
+  let page = keyOverviewPages[menuSlug] || 0;
+  if (page < 0) page = 0;
+  if (page > pages - 1) page = pages - 1;
+  keyOverviewPages[menuSlug] = page;
 
   let active = 0, idle = 0, dead = 0;
-  const lines = entries.map(([k, rec]) => {
+  for (const [, rec] of entries) {
     const label = keyStatusLabel(rec);
     if (label.indexOf('🟢') !== -1) active++;
     else if (label.indexOf('🟡') !== -1) idle++;
     else dead++;
-    return keyLineText(k, rec);
-  });
+  }
 
-  const summary = new EmbedBuilder()
-    .setTitle('🔑 License Keys')
+  const shown = entries
+    .slice(page * KEY_PAGE_SIZE, (page + 1) * KEY_PAGE_SIZE)
+    .map(([k, rec]) => keyLineText(k, rec))
+    .join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle('🔑 ' + menu.title)
     .setColor(COLOR_LIGHT_BLUE)
     .setThumbnail(LOGO)
+    .setDescription(shown || '*No keys generated yet.*')
     .addFields(
       { name: 'Total', value: String(entries.length), inline: true },
       { name: 'Active', value: String(active), inline: true },
       { name: 'Not activated', value: String(idle), inline: true },
       { name: 'Inactive', value: String(dead), inline: true }
     )
-    .setFooter({ text: 'Scorpion', iconURL: LOGO })
+    .setFooter({ text: 'Scorpion · page ' + (page + 1) + '/' + pages, iconURL: LOGO })
     .setTimestamp();
 
-  const embeds = [summary];
-
-  const MAX = 3800;
-  const chunks = [];
-  let chunk = '';
-  for (const line of lines) {
-    if (chunk.length + line.length + 1 > MAX) { chunks.push(chunk); chunk = ''; }
-    chunk += line + '\n';
+  const components = [];
+  if (pages > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('keypage_' + menuSlug + '_' + (page - 1))
+        .setEmoji('◀').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder()
+        .setCustomId('keypage_' + menuSlug + '_' + page)
+        .setLabel((page + 1) + '/' + pages)
+        .setStyle(ButtonStyle.Secondary).setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId('keypage_' + menuSlug + '_' + (page + 1))
+        .setEmoji('▶').setStyle(ButtonStyle.Secondary).setDisabled(page === pages - 1)
+    ));
   }
-  if (chunk.length) chunks.push(chunk);
-  if (!chunks.length) chunks.push('*No keys generated yet.*');
-
-  for (let i = 0; i < chunks.length && embeds.length < 10; i++) {
-    embeds.push(new EmbedBuilder()
-      .setColor(COLOR_LIGHT_BLUE)
-      .setDescription(chunks[i].slice(0, 4000))
-      .setFooter({ text: `Scorpion · ${i + 1}/${chunks.length}`, iconURL: LOGO }));
-  }
-
-  if (chunks.length > 9) {
-    embeds[embeds.length - 1].setFooter({ text: `Scorpion · showing 9/${chunks.length} pages`, iconURL: LOGO });
-  }
-  return embeds;
+  return { embed: embed, components: components };
 }
 
 async function updateKeyOverview() {
@@ -1694,19 +1738,26 @@ async function updateKeyOverview() {
     if (!channel) return;
 
     const data = await readGist();
-    const embeds = buildKeyOverviewEmbeds(data.keys || {});
+    const keys = data.keys || {};
+    const ids = data.keyOverviewMessageIds || {};
 
-    const messageId = await getKeyOverviewMessageId();
-    if (messageId) {
-      const msg = await channel.messages.fetch(messageId).catch(() => null);
+    // One-time cleanup of the old single overview message.
+    if (!Object.keys(ids).length && data.keyOverviewMessageId) {
+      const old = await channel.messages.fetch(data.keyOverviewMessageId).catch(() => null);
+      if (old && old.author.id === client.user.id) await old.delete().catch(() => {});
+    }
+
+    for (const slug of Object.keys(MENUS)) {
+      const view = buildKeyOverviewPage(keys, slug);
+      let msg = null;
+      if (ids[slug]) msg = await channel.messages.fetch(ids[slug]).catch(() => null);
       if (msg && msg.author.id === client.user.id) {
-        await msg.edit({ embeds });
-        return;
+        await msg.edit({ embeds: [view.embed], components: view.components });
+      } else {
+        const newMsg = await channel.send({ embeds: [view.embed], components: view.components });
+        await setKeyOverviewMessageId(slug, newMsg.id);
       }
     }
-    await clearBotMessages(channel);
-    const newMsg = await channel.send({ embeds });
-    await setKeyOverviewMessageId(newMsg.id);
   } catch (e) { console.error('updateKeyOverview:', e.message); }
 }
 
@@ -2246,7 +2297,7 @@ client.on('interactionCreate', async (i) => {
   // ===== License keys =====
   if (await keyApi.handleInteraction(i)) {
     // Refresh the key overview right away after an admin key command.
-    if (['keygen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
+    if (['fivemgen', 'rrgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
       updateKeyOverview().catch(() => {});
     }
     return;
@@ -2962,6 +3013,25 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Buttons =====
   if (i.isButton()) {
+    // Pagination van de key-overzichten (◀ pagina ▶ onder de embed).
+    if (i.customId.startsWith('keypage_')) {
+      const parts = i.customId.split('_');
+      const menuSlug = parts[1];
+      const targetPage = parseInt(parts[2], 10);
+      if (!MENUS[menuSlug] || isNaN(targetPage) || targetPage < 0) {
+        return i.reply({ content: 'Ongeldige pagina.', ephemeral: true });
+      }
+      keyOverviewPages[menuSlug] = targetPage;
+      try {
+        const data = await readGist();
+        const view = buildKeyOverviewPage(data.keys || {}, menuSlug);
+        await i.update({ embeds: [view.embed], components: view.components });
+      } catch (e) {
+        try { await i.reply({ content: 'Fout: ' + e.message, ephemeral: true }); } catch (_) {}
+      }
+      return;
+    }
+
     if (i.customId.startsWith('confirm_delivery_')) {
       const parts = i.customId.split('_');
       const customerId = parts[2];
