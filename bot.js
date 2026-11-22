@@ -2492,6 +2492,47 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
   return ticketChannel;
 }
 
+// ===== Command logging =====
+// Every slash command is recorded here, including denied ones. Keys in options are masked.
+const COMMAND_LOG_CHANNEL_ID = process.env.COMMAND_LOG_CHANNEL_ID || '1568756706371051531';
+
+function commandOptionsText(i) {
+  try {
+    const data = (i.options && i.options.data) || [];
+    if (!data.length) return 'none';
+    return data.map(opt => {
+      let value = opt.value;
+      if (opt.user) value = '@' + opt.user.username;
+      else if (opt.channel) value = '#' + opt.channel.name;
+      else if (opt.role) value = '@' + opt.role.name;
+      if (String(opt.name).toLowerCase() === 'key' && typeof value === 'string' && value.startsWith('SCORPION-')) {
+        value = 'SCORPION-****-****-****-' + value.slice(-4);
+      }
+      return '`' + opt.name + '`: ' + String(value);
+    }).join(' · ');
+  } catch (e) { return 'n/a'; }
+}
+
+async function logCommand(i) {
+  try {
+    const channel = await client.channels.fetch(COMMAND_LOG_CHANNEL_ID).catch(function () { return null; });
+    if (!channel || !channel.isTextBased()) return;
+    const embed = new EmbedBuilder()
+      .setTitle('⌨️ Command used')
+      .setColor(COLOR_LIGHT_BLUE)
+      .addFields(
+        { name: 'Command', value: '`/' + i.commandName + '`', inline: true },
+        { name: 'User', value: '<@' + i.user.id + '> · ' + i.user.username, inline: true },
+        { name: 'Options', value: commandOptionsText(i).slice(0, 1024) || 'none', inline: false },
+        { name: 'Channel', value: i.channelId ? '<#' + i.channelId + '>' : 'DM', inline: true },
+        { name: 'Server', value: i.guild ? i.guild.name : 'DM', inline: true }
+      )
+      .setFooter({ text: 'Scorpion · ' + i.user.id, iconURL: LOGO })
+      .setTimestamp();
+    await channel.send({ embeds: [embed] });
+  } catch (e) { console.error('logCommand:', e && e.message); }
+}
+
 // ===== Interaction handler =====
 client.on('interactionCreate', async (i) => {
   if (i.isAutocomplete()) {
@@ -2506,6 +2547,8 @@ client.on('interactionCreate', async (i) => {
     } catch (e) { try { await i.respond([]); } catch (_) {} }
     return;
   }
+
+  if (i.isChatInputCommand()) logCommand(i).catch(function () {});
 
   // ===== License keys =====
   if (await keyApi.handleInteraction(i)) {
