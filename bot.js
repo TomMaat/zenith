@@ -83,6 +83,8 @@ const MENUS = {
            plans: ['1 week', '1 month', 'lifetime'], choices: PLAN_CHOICES },
   rr:    { slug: 'rr',    name: 'Rob Run', title: 'Rob Run Keys', command: 'rrgen',
            plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
+  retrac: { slug: 'retrac', name: 'Retrac', title: 'Retrac Keys', command: 'retracgen',
+            plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
 };
 
 function isKnownPlan(plan) {
@@ -97,6 +99,15 @@ function keyMenuOf(rec) {
 function isRobRunProduct(name) {
   const n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   return n === 'rr' || n.indexOf('robrun') !== -1;
+}
+
+function isRetracProduct(name) {
+  const n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return n === 'retrac' || n.indexOf('pulseretrac') !== -1;
+}
+
+function hasLimitedPlans(name) {
+  return isRobRunProduct(name) || isRetracProduct(name);
 }
 
 const KEY_EMBED_COLOR = 0x2b2b2b;
@@ -660,6 +671,15 @@ function createKeySystem(opts) {
       ],
     },
     {
+      name: 'retracgen',
+      description: 'Generate Retrac license keys',
+      options: [
+        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: RR_PLAN_CHOICES },
+        { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
+        { name: 'note', description: 'Optional note', type: 3, required: false },
+      ],
+    },
+    {
       name: 'keyinfo',
       description: 'Show info about a license key',
       options: [{ name: 'key', description: 'License key', type: 3, required: true }],
@@ -996,7 +1016,7 @@ function createKeySystem(opts) {
     if (!i.isChatInputCommand()) return false;
 
     const name = i.commandName;
-    const known = ['fivemgen', 'rrgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
+    const known = ['fivemgen', 'rrgen', 'retracgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
     if (known.indexOf(name) === -1) return false;
 
     if (!KEY_ADMIN_IDS.has(i.user.id)) {
@@ -1007,6 +1027,7 @@ function createKeySystem(opts) {
     try {
       if (name === 'fivemgen') await cmdGen(i, 'fivem');
       else if (name === 'rrgen') await cmdGen(i, 'rr');
+      else if (name === 'retracgen') await cmdGen(i, 'retrac');
       else if (name === 'keyinfo') await cmdKeyinfo(i);
       else if (name === 'keyreset') await cmdKeyreset(i);
       else if (name === 'keyrevoke') await cmdKeyrevoke(i);
@@ -1088,6 +1109,7 @@ const RULES_CHANNEL_ID = '1564632375336505344';
 const VERIFY_ROLE_ID = '1564415134171013154';
 const PRICING_CHANNEL_ID = '1568415867677712576';
 const RR_PRICING_CHANNEL_ID = '1572242911733612624';
+const RETRAC_PRICING_CHANNEL_ID = '1573100869396992060';
 const TICKET_PANEL_CHANNEL_ID = '1564415332737884233';
 const TICKET_SUPPORT_ROLE_ID = '1564415128659824731';
 const TICKET_TAG_ROLE_ID = '1564638227204149258';
@@ -1291,6 +1313,7 @@ async function readGist() {
     productPanelMessageId: parsed.productPanelMessageId || null,
     rulesMessageId: parsed.rulesMessageId || null,
     rrPricingMessageId: parsed.rrPricingMessageId || null,
+    retracPricingMessageId: parsed.retracPricingMessageId || null,
     keyOverviewMessageId: parsed.keyOverviewMessageId || null,
     keyOverviewMessageIds: parsed.keyOverviewMessageIds || {},
     keys: parsed.keys || {},
@@ -2217,6 +2240,37 @@ async function setupRRPriceList() {
   } catch (e) { console.error('setupRRPriceList:', e.message); }
 }
 
+// ===== Retrac pricing =====
+async function setupRetracPriceList() {
+  try {
+    const channel = await client.channels.fetch(RETRAC_PRICING_CHANNEL_ID).catch(() => null);
+    if (!channel) return;
+
+    const embed = new EmbedBuilder()
+      .setTitle('Scorpion Retrac')
+      .setColor(COLOR_LIGHT_BLUE)
+      .setThumbnail(LOGO)
+      .addFields(
+        { name: '💰 Pricing', value: '```\n1 Month   →  €7.50\nLifetime  →  €15.-\n```', inline: false }
+      )
+      .setFooter({ text: 'Scorpion', iconURL: LOGO });
+
+    const messageId = (await readGist()).retracPricingMessageId;
+    if (messageId) {
+      const msg = await channel.messages.fetch(messageId).catch(() => null);
+      if (msg && msg.author.id === client.user.id) {
+        await msg.edit({ embeds: [embed] });
+        return;
+      }
+    }
+    await clearBotMessages(channel);
+    const newMsg = await channel.send({ embeds: [embed] });
+    const d = await readGist();
+    d.retracPricingMessageId = newMsg.id;
+    await writeGist(d);
+  } catch (e) { console.error('setupRetracPriceList:', e.message); }
+}
+
 // ===== Ticket panel =====
 async function setupTicketPanel() {
   try {
@@ -2343,7 +2397,7 @@ client.on('interactionCreate', async (i) => {
   // ===== License keys =====
   if (await keyApi.handleInteraction(i)) {
     // Refresh the key overview right away after an admin key command.
-    if (['fivemgen', 'rrgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
+    if (['fivemgen', 'rrgen', 'retracgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
       updateKeyOverview().catch(() => {});
     }
     return;
@@ -2361,8 +2415,9 @@ client.on('interactionCreate', async (i) => {
     const products = await getProducts();
     const productData = products[productName];
     if (!productData) return i.editReply({ content: `⚠️ Product **${productName}** not found. Add it in <#${PRODUCT_PANEL_CHANNEL_ID}>.` });
-    if (plan === '1 week' && isRobRunProduct(productName)) {
-      return i.editReply({ content: '⚠️ Rob Run heeft alleen **1 month** en **lifetime**.' });
+    if (plan === '1 week' && hasLimitedPlans(productName)) {
+      return i.editReply({ content: '⚠️ ' + (isRetracProduct(productName) ? 'Retrac' : 'Rob Run') +
+        ' heeft alleen **1 month** en **lifetime**.' });
     }
 
     const duration = planDurationMs(plan);
@@ -2790,7 +2845,7 @@ client.on('interactionCreate', async (i) => {
       const data = pendingPurchases.get(i.user.id);
       if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
       data.productName = i.values[0];
-      const planOptions = isRobRunProduct(data.productName)
+      const planOptions = hasLimitedPlans(data.productName)
         ? [
             { label: '1 month', value: '1 month' },
             { label: 'Lifetime', value: 'lifetime' },
@@ -3373,6 +3428,7 @@ client.once('ready', async () => {
   await setupRules();
   await setupPricing();
   await setupRRPriceList();
+  await setupRetracPriceList();
   await setupTicketPanel();
   await setupLegitPoll();
   await setupProductPanel();
