@@ -2494,7 +2494,7 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
 
 // ===== Command logging =====
 // Every slash command is recorded here, including denied ones. Keys in options are masked.
-const COMMAND_LOG_CHANNEL_ID = process.env.COMMAND_LOG_CHANNEL_ID || '1568756706371051531';
+const COMMAND_LOG_CHANNEL_ID = process.env.COMMAND_LOG_CHANNEL_ID || '1555729409535774833';
 
 function commandOptionsText(i) {
   try {
