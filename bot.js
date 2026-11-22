@@ -839,6 +839,23 @@ function createKeySystem(opts) {
     await i.editReply({
       content: '✅ HWID unbound for `' + key + '`. The next login binds the new PC. Expiry is unchanged.',
     });
+
+    // Wordt /keyreset in een HWID-reset ticket gebruikt? Markeer het verzoek als afgehandeld.
+    try {
+      const tickets = await getTickets();
+      const ticket = tickets[i.channelId];
+      if (ticket && ticket.categorie === 'hwidreset') {
+        const list = (await readGist()).hwidResetRequests || [];
+        const entry = list.slice().reverse().find(function (e) { return e.key === key && e.status === 'open'; });
+        if (entry) {
+          entry.status = 'done';
+          entry.doneBy = i.user.id;
+          entry.doneAt = Date.now();
+          await saveHwidResetRequests(list);
+        }
+        await i.channel.send({ content: `✅ HWID reset uitgevoerd door <@${i.user.id}> voor \`${key}\`.` }).catch(function () {});
+      }
+    } catch (e) { console.error('HWID reset ticket update:', e.message); }
   }
 
   async function cmdKeyrevoke(i) {
@@ -2470,9 +2487,14 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
 
   const embed = new EmbedBuilder()
     .setTitle(cat.name).setColor(cat.color)
-    .setDescription(`<@${user.id}> — describe your question below.`)
+    .setDescription(categoryKey === 'hwidreset'
+      ? `<@${user.id}> requested an HWID reset. Staff: run \`/keyreset <key>\` in this ticket.`
+      : `<@${user.id}> — describe your question below.`)
     .setFooter({ text: 'Scorpion', iconURL: LOGO }).setTimestamp();
 
+  if (extraData.hwidKey) {
+    embed.addFields({ name: 'License key', value: '`' + extraData.hwidKey + '`', inline: false });
+  }
   if (extraData.productName) {
     embed.addFields(
       { name: 'Product', value: extraData.productName, inline: true },
@@ -2484,7 +2506,7 @@ async function createTicket(guild, user, categoryKey, extraData = {}) {
     embed.addFields({ name: 'Question', value: extraData.question, inline: false });
   }
 
-  // Alleen Close knop — HWID reset knop is verwijderd
+  // Sluitknop; voor HWID-resets voert staff /keyreset in dit ticket uit.
   const closeRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger)
   );
@@ -3188,78 +3210,27 @@ client.on('interactionCreate', async (i) => {
       await i.deferReply({ ephemeral: true });
 
       try {
-        const result = await keyApi.resetHwidByKey(key);
+        const guild = await client.guilds.fetch(GUILD_ID);
+        const ticket = await createTicket(guild, i.user, 'hwidreset', {
+          question: reason || 'No reason given',
+          hwidKey: key,
+        });
 
-        if (!result.ok) {
-          let msg = '⚠️ Er ging iets mis.';
-          if (result.error === 'unknown_key') msg = '⚠️ Onbekende key. Controleer je key en probeer opnieuw.';
-          else if (result.error === 'revoked') msg = '🚫 Deze key is ingetrokken (revoked). Neem contact op met staff.';
-          else if (result.error === 'not_bound') msg = 'ℹ️ Deze key is nog niet gekoppeld aan een PC (geen HWID). Je kunt hem gewoon gebruiken.';
-          else if (result.error === 'invalid_key_format') msg = '⚠️ Ongeldig key-formaat.';
-          return i.editReply({ content: msg });
-        }
-
-        const rec = result.rec;
-        const product = FIVEM.name;
-
-        // Log in het logkanaal
-        try {
-          const logChannel = await client.channels.fetch(HWID_RESET_LOG_CHANNEL_ID).catch(() => null);
-          if (logChannel) {
-            await logChannel.send({
-              embeds: [new EmbedBuilder()
-                .setTitle('🔄 HWID Reset aangevraagd')
-                .setColor(COLOR_LIGHT_BLUE)
-                .setThumbnail(LOGO)
-                .addFields(
-                  { name: 'Gebruiker', value: `<@${i.user.id}> (${i.user.tag})`, inline: true },
-                  { name: 'Ticket', value: `<#${i.channelId}>`, inline: true },
-                  { name: 'Key', value: `\`${result.key}\``, inline: true },
-                  { name: 'Product', value: product, inline: true },
-                  { name: 'Oude HWID', value: `\`${maskHwid(result.oldHwid)}\``, inline: false },
-                  { name: 'Reden', value: reason || '*(geen reden opgegeven)*', inline: false },
-                  { name: 'Totaal resets', value: String(rec.hwidResets || 1), inline: true }
-                )
-                .setFooter({ text: 'Scorpion', iconURL: LOGO })
-                .setTimestamp()],
-            });
-          }
-        } catch (e) { console.error('HWID log:', e.message); }
-
-        // Bewaar in gist geschiedenis
         await addHwidResetRequest({
           userId: i.user.id,
           username: i.user.tag,
-          ticketChannelId: i.channelId,
-          key: result.key,
-          product: product,
-          oldHwid: result.oldHwid,
+          ticketChannelId: ticket.id,
+          key: key,
           reason: reason || '',
+          status: 'open',
           at: Date.now(),
         }).catch(() => {});
 
-        // Bevestiging in ticket
-        await i.channel.send({
-          embeds: [new EmbedBuilder()
-            .setTitle('🔄 HWID Reset')
-            .setColor(COLOR_LIGHT_BLUE)
-            .setThumbnail(LOGO)
-            .setDescription(`De HWID van key \`${result.key}\` is gereset.\nJe kunt de key nu op je nieuwe PC gebruiken.`)
-            .addFields(
-              { name: 'Product', value: product, inline: true },
-              { name: 'Reden', value: reason || '-', inline: true },
-              { name: 'Uitgevoerd door', value: `<@${i.user.id}>`, inline: true }
-            )
-            .setFooter({ text: 'Scorpion', iconURL: LOGO })
-            .setTimestamp()],
-        }).catch(() => {});
-
-        // Refresh key overview
-        updateKeyOverview().catch(() => {});
-
-        await i.editReply({ content: `✅ HWID reset voltooid voor \`${result.key}\`. Je kunt de key nu op je nieuwe PC gebruiken.` });
+        await i.editReply({
+          content: `✅ HWID reset ticket created: <#${ticket.id}>. Staff will run \`/keyreset ${key}\` in that ticket.`,
+        });
       } catch (e) {
-        console.error('HWID reset fout:', e.message);
+        console.error('HWID reset ticket:', e.message);
         await i.editReply({ content: `❌ Error: ${e.message}` });
       }
       return;
