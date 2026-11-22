@@ -2200,9 +2200,9 @@ async function setupPricing() {
       .setTitle('Scorpion Custom Bypass').setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)
       .setDescription('> Premium external cheat with advanced bypass.\n> ⚡ Fast delivery • 🔒 Safe • 🕐 24/7 Support')
       .addFields(
-        { name: '💰 Pricing', value: '```\n1 Week    →  €7.50\n1 Month   →  €20.00\nLifetime  →  €60.00\n```', inline: false },
+        { name: '💰 Pricing', value: '```\n1 Week    →  €5.00\n1 Month   →  €10.00\nLifetime  →  €30.00\n```', inline: false },
         { name: '🛡️ Product', value: '> • External Cheat\n> • Advanced bypass\n> • Daily Updates\n> • Easy to use interface\n> • 24/7 Support', inline: false },
-        { name: '👥 Group Deals', value: '```\nDuo    →  €35 per person\nTrio   →  €25 per person\nSquad  →  €20 per person\n```', inline: false }
+        { name: '👥 Group Deals', value: '```\nDuo    →  €17.50 per person\nTrio   →  €12.50 per person\nSquad  →  €10 per person\n```', inline: false }
       )
       .setFooter({ text: 'Scorpion', iconURL: LOGO });
     await channel.send({ embeds: [embed] });
@@ -2216,7 +2216,7 @@ async function setupRRPriceList() {
     if (!channel) return;
 
     const embed = new EmbedBuilder()
-      .setTitle('Scorpion Rob Run')
+      .setTitle('Scorpion Rob Run External')
       .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(LOGO)
       .addFields(
@@ -2247,7 +2247,7 @@ async function setupRetracPriceList() {
     if (!channel) return;
 
     const embed = new EmbedBuilder()
-      .setTitle('Scorpion Retrac')
+      .setTitle('Scorpion Retrac External')
       .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(LOGO)
       .addFields(
