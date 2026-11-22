@@ -61,6 +61,12 @@ const PLAN_CHOICES = [
   { name: 'Lifetime', value: 'lifetime' },
 ];
 
+// Rob Run has no weekly plan.
+const RR_PLAN_CHOICES = [
+  { name: '1 month', value: '1 month' },
+  { name: 'Lifetime', value: 'lifetime' },
+];
+
 // The downloadable FiveM loader (kept for the site / admin upload).
 const FIVEM = {
   slug: 'fivem',
@@ -73,8 +79,10 @@ const FIVEM = {
 // Every menu has its own gen command and its own embed in the key channel.
 // Keys from the old single-menu system have no "menu" field -> FiveM.
 const MENUS = {
-  fivem: { slug: 'fivem', name: 'FiveM', title: 'Fivem Keys', command: 'fivemgen' },
-  rr:    { slug: 'rr',    name: 'Rob Run', title: 'Rob Run Keys', command: 'rrgen' },
+  fivem: { slug: 'fivem', name: 'FiveM', title: 'Fivem Keys', command: 'fivemgen',
+           plans: ['1 week', '1 month', 'lifetime'], choices: PLAN_CHOICES },
+  rr:    { slug: 'rr',    name: 'Rob Run', title: 'Rob Run Keys', command: 'rrgen',
+           plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
 };
 
 function isKnownPlan(plan) {
@@ -84,6 +92,11 @@ function isKnownPlan(plan) {
 function keyMenuOf(rec) {
   const m = rec && rec.menu;
   return MENUS[m] ? m : 'fivem';
+}
+
+function isRobRunProduct(name) {
+  const n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return n === 'rr' || n.indexOf('robrun') !== -1;
 }
 
 const KEY_EMBED_COLOR = 0x2b2b2b;
@@ -641,7 +654,7 @@ function createKeySystem(opts) {
       name: 'rrgen',
       description: 'Generate Rob Run license keys',
       options: [
-        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: PLAN_CHOICES },
+        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: RR_PLAN_CHOICES },
         { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
         { name: 'note', description: 'Optional note', type: 3, required: false },
       ],
@@ -712,8 +725,8 @@ function createKeySystem(opts) {
     const amount = i.options.getInteger('amount') || 1;
     const note = i.options.getString('note') || '';
 
-    if (!isKnownPlan(plan) || FIVEM.plans.indexOf(plan) === -1) {
-      await i.reply({ content: 'Unknown plan. Use: ' + FIVEM.plans.join(', ') + '.', ephemeral: true });
+    if (!isKnownPlan(plan) || menu.plans.indexOf(plan) === -1) {
+      await i.reply({ content: 'Unknown plan for ' + menu.name + '. Use: ' + menu.plans.join(', ') + '.', ephemeral: true });
       return;
     }
 
@@ -1074,6 +1087,7 @@ const SUGGESTIE_CHANNEL_ID = '1568755542799945909';
 const RULES_CHANNEL_ID = '1564632375336505344';
 const VERIFY_ROLE_ID = '1564415134171013154';
 const PRICING_CHANNEL_ID = '1568415867677712576';
+const RR_PRICING_CHANNEL_ID = '1572242911733612624';
 const TICKET_PANEL_CHANNEL_ID = '1564415332737884233';
 const TICKET_SUPPORT_ROLE_ID = '1564415128659824731';
 const TICKET_TAG_ROLE_ID = '1564638227204149258';
@@ -1276,6 +1290,7 @@ async function readGist() {
     products: parsed.products || {},
     productPanelMessageId: parsed.productPanelMessageId || null,
     rulesMessageId: parsed.rulesMessageId || null,
+    rrPricingMessageId: parsed.rrPricingMessageId || null,
     keyOverviewMessageId: parsed.keyOverviewMessageId || null,
     keyOverviewMessageIds: parsed.keyOverviewMessageIds || {},
     keys: parsed.keys || {},
@@ -2171,6 +2186,44 @@ async function setupPricing() {
   } catch (e) { console.error('setupPricing:', e.message); }
 }
 
+// ===== Rob Run pricing =====
+async function setupRRPriceList() {
+  try {
+    const channel = await client.channels.fetch(RR_PRICING_CHANNEL_ID).catch(() => null);
+    if (!channel) return;
+
+    const embed = new EmbedBuilder()
+      .setAuthor({ name: 'Scorpion · Rob Run', iconURL: LOGO })
+      .setTitle('💎 Pricing')
+      .setColor(COLOR_DARK)
+      .setThumbnail(LOGO)
+      .setDescription(
+        '**Rob Run** licenses — pick a plan and open a purchase ticket.\n\n' +
+        '> ⚡ Instant delivery  •  🔒 HWID-bound  •  🕐 24/7 support'
+      )
+      .addFields(
+        { name: '📅 Month', value: '**€7.50**', inline: true },
+        { name: '♾️ Lifetime', value: '**€15.-**', inline: true }
+      )
+      .setFooter({ text: 'Scorpion', iconURL: LOGO })
+      .setTimestamp();
+
+    const messageId = (await readGist()).rrPricingMessageId;
+    if (messageId) {
+      const msg = await channel.messages.fetch(messageId).catch(() => null);
+      if (msg && msg.author.id === client.user.id) {
+        await msg.edit({ embeds: [embed] });
+        return;
+      }
+    }
+    await clearBotMessages(channel);
+    const newMsg = await channel.send({ embeds: [embed] });
+    const d = await readGist();
+    d.rrPricingMessageId = newMsg.id;
+    await writeGist(d);
+  } catch (e) { console.error('setupRRPriceList:', e.message); }
+}
+
 // ===== Ticket panel =====
 async function setupTicketPanel() {
   try {
@@ -2315,6 +2368,9 @@ client.on('interactionCreate', async (i) => {
     const products = await getProducts();
     const productData = products[productName];
     if (!productData) return i.editReply({ content: `⚠️ Product **${productName}** not found. Add it in <#${PRODUCT_PANEL_CHANNEL_ID}>.` });
+    if (plan === '1 week' && isRobRunProduct(productName)) {
+      return i.editReply({ content: '⚠️ Rob Run heeft alleen **1 month** en **lifetime**.' });
+    }
 
     const duration = planDurationMs(plan);
     if (duration === undefined) return i.editReply({ content: 'Unknown plan.' });
@@ -2741,13 +2797,19 @@ client.on('interactionCreate', async (i) => {
       const data = pendingPurchases.get(i.user.id);
       if (!data) return i.update({ content: 'Session expired. Please start over.', components: [] });
       data.productName = i.values[0];
+      const planOptions = isRobRunProduct(data.productName)
+        ? [
+            { label: '1 month', value: '1 month' },
+            { label: 'Lifetime', value: 'lifetime' },
+          ]
+        : [
+            { label: '1 week', value: '1 week' },
+            { label: '1 month', value: '1 month' },
+            { label: 'Lifetime', value: 'lifetime' },
+          ];
       const planMenu = new StringSelectMenuBuilder()
         .setCustomId('purchase_plan_select').setPlaceholder('Select a plan')
-        .addOptions([
-          { label: '1 week', value: '1 week' },
-          { label: '1 month', value: '1 month' },
-          { label: 'Lifetime', value: 'lifetime' },
-        ]);
+        .addOptions(planOptions);
       return i.update({
         embeds: [new EmbedBuilder().setTitle('🛒 Purchase').setDescription(`**Product:** ${data.productName}\n\nWhich plan do you want?`).setColor(COLOR_LIGHT_BLUE).setThumbnail(LOGO)],
         components: [new ActionRowBuilder().addComponents(planMenu)]
@@ -3317,6 +3379,7 @@ client.once('ready', async () => {
 
   await setupRules();
   await setupPricing();
+  await setupRRPriceList();
   await setupTicketPanel();
   await setupLegitPoll();
   await setupProductPanel();
