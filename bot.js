@@ -807,6 +807,8 @@ function createKeySystem(opts) {
         { name: 'Plan', value: rec.plan || '?', inline: true },
         { name: 'Username', value: rec.username || '-', inline: true },
         { name: 'HWID', value: '`' + maskHwid(rec.hwid) + '`', inline: false },
+        { name: 'HWID resets', value: String(rec.hwidResets || 0), inline: true },
+        { name: 'Last HWID reset', value: rec.lastHwidResetAt ? formatStamp(rec.lastHwidResetAt) : 'never', inline: true },
         { name: 'Created', value: formatStamp(rec.createdAt), inline: true },
         { name: 'Activated', value: rec.activatedAt ? formatStamp(rec.activatedAt) : 'not activated', inline: true },
         { name: 'Expires', value: rec.activatedAt ? formatStamp(rec.expiresAt) : 'starts on activation', inline: true },
@@ -825,6 +827,8 @@ function createKeySystem(opts) {
       if (!rec) return { result: null, dirty: false };
       rec.hwid = null;
       rec.lastSeen = null;
+      rec.hwidResets = (rec.hwidResets || 0) + 1;
+      rec.lastHwidResetAt = Date.now();
       return { result: rec, dirty: true };
     });
 
@@ -1635,50 +1639,95 @@ async function clearBotMessages(channel) {
 const getOverviewMessageId = async () => (await readGist()).overzichtMessageId;
 async function setOverviewMessageId(id) { const d = await readGist(); d.overzichtMessageId = id; await writeGist(d); }
 
-async function buildOverviewEmbed() {
-  const purchases = await getPurchases();
-  const perPlan = {};
-  for (const plan of Object.keys(PLANS)) perPlan[plan] = [];
-  for (const p of purchases) {
-    const planName = p.plan === 'lifetime' ? 'lifetime' : p.plan;
-    if (!perPlan[planName]) perPlan[planName] = [];
-    perPlan[planName].push(p);
+// The overview is paginated: every purchase gets its own line instead of the
+// 1024-character field limit silently cutting the list off.
+const PURCHASE_PAGE_SIZE = 12;
+const purchaseOverviewPage = { value: 0 };
+
+function purchaseLineText(p) {
+  const remaining = formatRemaining(p.eindTijd === undefined ? null : p.eindTijd);
+  const key = p.key ? '`' + p.key + '`' : 'no key';
+  const prod = p.productName ? ' [' + p.productName + ']' : '';
+  const plan = p.plan || '?';
+  return '<@' + p.userId + '>' + prod + ' — ' + plan + ' — ' + remaining + ' — ' + key;
+}
+
+function buildOverviewPage(purchases) {
+  const list = purchases || [];
+  const planOrder = ['1 week', '1 month', 'lifetime'];
+  const counts = { '1 week': 0, '1 month': 0, lifetime: 0 };
+  for (const p of list) {
+    const name = p.plan === 'lifetime' ? 'lifetime' : p.plan;
+    if (Object.prototype.hasOwnProperty.call(counts, name)) counts[name]++;
   }
+
+  const sorted = list.slice().sort(function (a, b) {
+    const ai = planOrder.indexOf(a.plan === 'lifetime' ? 'lifetime' : a.plan);
+    const bi = planOrder.indexOf(b.plan === 'lifetime' ? 'lifetime' : b.plan);
+    if (ai !== bi) return ai - bi;
+    return (a.eindTijd || 0) - (b.eindTijd || 0);
+  });
+
+  const pages = Math.max(1, Math.ceil(sorted.length / PURCHASE_PAGE_SIZE));
+  let page = purchaseOverviewPage.value || 0;
+  if (page < 0) page = 0;
+  if (page > pages - 1) page = pages - 1;
+  purchaseOverviewPage.value = page;
+
+  const shown = sorted
+    .slice(page * PURCHASE_PAGE_SIZE, (page + 1) * PURCHASE_PAGE_SIZE)
+    .map(purchaseLineText)
+    .join('\n');
+
   const embed = new EmbedBuilder()
     .setTitle('Active Purchases')
     .setColor(COLOR_LIGHT_BLUE)
     .setThumbnail(LOGO)
-    .setFooter({ text: 'Scorpion', iconURL: LOGO })
+    .setDescription(shown || '*No active purchases.*')
+    .addFields(
+      { name: '**1 week**', value: String(counts['1 week']), inline: true },
+      { name: '**1 month**', value: String(counts['1 month']), inline: true },
+      { name: '**lifetime**', value: String(counts.lifetime), inline: true },
+      { name: 'Total', value: String(sorted.length), inline: true }
+    )
+    .setFooter({ text: 'Scorpion · page ' + (page + 1) + '/' + pages, iconURL: LOGO })
     .setTimestamp();
-  for (const plan of ['1 week', '1 month', 'lifetime']) {
-    const list = perPlan[plan] || [];
-    let value = list.length === 0 ? '*None*' : '';
-    for (const p of list) {
-      const remaining = formatRemaining(p.eindTijd);
-      const key = p.key ? p.key : 'no key';
-      const prod = p.productName ? ` [${p.productName}]` : '';
-      value += `<@${p.userId}>${prod} — ${remaining} — \`${key}\`\n`;
-    }
-    if (value.length > 1024) value = value.slice(0, 1020) + '...';
-    embed.addFields({ name: `**${plan}** (${list.length})`, value, inline: false });
+
+  const components = [];
+  if (pages > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('purchasepage_' + (page - 1))
+        .setEmoji('◀').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder()
+        .setCustomId('purchasepage_' + page)
+        .setLabel((page + 1) + '/' + pages)
+        .setStyle(ButtonStyle.Secondary).setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId('purchasepage_' + (page + 1))
+        .setEmoji('▶').setStyle(ButtonStyle.Secondary).setDisabled(page === pages - 1)
+    ));
   }
-  return embed;
+  return { embed: embed, components: components };
 }
 
 async function updateOverview() {
   try {
     const channel = await client.channels.fetch(PURCHASE_LOG_CHANNEL_ID);
     if (!channel) return;
-    const embed = await buildOverviewEmbed();
+    const view = buildOverviewPage(await getPurchases());
     const messageId = await getOverviewMessageId();
     if (messageId) {
       try {
         const msg = await channel.messages.fetch(messageId);
-        if (msg && msg.author.id === client.user.id) { await msg.edit({ embeds: [embed] }); return; }
+        if (msg && msg.author.id === client.user.id) {
+          await msg.edit({ embeds: [view.embed], components: view.components });
+          return;
+        }
       } catch (e) {}
     }
     await clearBotMessages(channel);
-    const newMsg = await channel.send({ embeds: [embed] });
+    const newMsg = await channel.send({ embeds: [view.embed], components: view.components });
     await setOverviewMessageId(newMsg.id);
   } catch (e) { console.error('updateOverview:', e.message); }
 }
@@ -1687,8 +1736,8 @@ async function restartOverview() {
     const channel = await client.channels.fetch(PURCHASE_LOG_CHANNEL_ID);
     if (!channel) return;
     await clearBotMessages(channel);
-    const embed = await buildOverviewEmbed();
-    const newMsg = await channel.send({ embeds: [embed] });
+    const view = buildOverviewPage(await getPurchases());
+    const newMsg = await channel.send({ embeds: [view.embed], components: view.components });
     await setOverviewMessageId(newMsg.id);
   } catch (e) { console.error('restartOverview:', e.message); }
 }
@@ -1716,6 +1765,15 @@ function keyStatusLabel(rec) {
   return '🟢 active';
 }
 
+// Active first, then the ones the customer still has to start, then paused and expired.
+function keyStatusRank(rec) {
+  if (rec.banned) return 5;
+  if (rec.paused) return 2;
+  if (!rec.hwid) return 1;
+  if (rec.expiresAt !== null && rec.expiresAt !== undefined && Date.now() > rec.expiresAt) return 3;
+  return 0;
+}
+
 function keyLineText(key, rec) {
   let time;
   if (!rec.activatedAt) time = 'not started';
@@ -1731,7 +1789,12 @@ function keyEntriesForMenu(keys, menuSlug) {
   return Object.entries(keys || {})
     // Revoked keys blijven verborgen in de lijst (alleen de telling telt ze niet).
     .filter(([, rec]) => keyMenuOf(rec) === menuSlug && !rec.banned)
-    .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
+    // Groeperen op status: active, not activated, paused, expired — daarna nieuwste eerst.
+    .sort((a, b) => {
+      const rank = keyStatusRank(a[1]) - keyStatusRank(b[1]);
+      if (rank !== 0) return rank;
+      return (b[1].createdAt || 0) - (a[1].createdAt || 0);
+    });
 }
 
 function buildKeyOverviewPage(keys, menuSlug) {
@@ -3174,13 +3237,29 @@ client.on('interactionCreate', async (i) => {
 
   // ===== Buttons =====
   if (i.isButton()) {
+    // Pagination van de Active Purchases-overzicht.
+    if (i.customId.startsWith('purchasepage_')) {
+      const targetPage = parseInt(i.customId.slice('purchasepage_'.length), 10);
+      if (isNaN(targetPage) || targetPage < 0) {
+        return i.reply({ content: 'Invalid page.', ephemeral: true });
+      }
+      purchaseOverviewPage.value = targetPage;
+      try {
+        const view = buildOverviewPage(await getPurchases());
+        await i.update({ embeds: [view.embed], components: view.components });
+      } catch (e) {
+        try { await i.reply({ content: 'Error: ' + e.message, ephemeral: true }); } catch (_) {}
+      }
+      return;
+    }
+
     // Pagination van de key-overzichten (◀ pagina ▶ onder de embed).
     if (i.customId.startsWith('keypage_')) {
       const parts = i.customId.split('_');
       const menuSlug = parts[1];
       const targetPage = parseInt(parts[2], 10);
       if (!MENUS[menuSlug] || isNaN(targetPage) || targetPage < 0) {
-        return i.reply({ content: 'Ongeldige pagina.', ephemeral: true });
+        return i.reply({ content: 'Invalid page.', ephemeral: true });
       }
       keyOverviewPages[menuSlug] = targetPage;
       try {
@@ -3188,7 +3267,7 @@ client.on('interactionCreate', async (i) => {
         const view = buildKeyOverviewPage(data.keys || {}, menuSlug);
         await i.update({ embeds: [view.embed], components: view.components });
       } catch (e) {
-        try { await i.reply({ content: 'Fout: ' + e.message, ephemeral: true }); } catch (_) {}
+        try { await i.reply({ content: 'Error: ' + e.message, ephemeral: true }); } catch (_) {}
       }
       return;
     }
