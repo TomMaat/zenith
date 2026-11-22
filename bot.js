@@ -2193,20 +2193,13 @@ async function setupRRPriceList() {
     if (!channel) return;
 
     const embed = new EmbedBuilder()
-      .setAuthor({ name: 'Scorpion · Rob Run', iconURL: LOGO })
-      .setTitle('💎 Pricing')
-      .setColor(COLOR_DARK)
+      .setTitle('Scorpion Rob Run')
+      .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(LOGO)
-      .setDescription(
-        '**Rob Run** licenses — pick a plan and open a purchase ticket.\n\n' +
-        '> ⚡ Instant delivery  •  🔒 HWID-bound  •  🕐 24/7 support'
-      )
       .addFields(
-        { name: '📅 Month', value: '**€7.50**', inline: true },
-        { name: '♾️ Lifetime', value: '**€15.-**', inline: true }
+        { name: '💰 Pricing', value: '```\n1 Month   →  €7.50\nLifetime  →  €15.-\n```', inline: false }
       )
-      .setFooter({ text: 'Scorpion', iconURL: LOGO })
-      .setTimestamp();
+      .setFooter({ text: 'Scorpion', iconURL: LOGO });
 
     const messageId = (await readGist()).rrPricingMessageId;
     if (messageId) {
