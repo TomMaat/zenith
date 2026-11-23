@@ -33,6 +33,7 @@ const PORT = process.env.PORT || 3000;
 const KEY_ADMIN_IDS = new Set([
   '1033753872927293520',
   '710623438657683486',
+  '1567885438247641110',
 ]);
 
 // /newloader posts here. The download site itself is announced in the other one.
