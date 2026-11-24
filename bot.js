@@ -37,7 +37,7 @@ const KEY_ADMIN_IDS = new Set([
 ]);
 
 // This account may ONLY use /luxisgen (Lunix Rob Run), never the other key commands.
-const LUXIS_ADMIN_ID = '1567885438247641110';
+const LUXIS_ADMIN_ID = '1462997840803532901';
 // This account may ONLY use /hxgen (HX Rob Run), never the other key commands.
 const HX_ADMIN_ID = '759935983264464966';
 
@@ -914,7 +914,7 @@ function createKeySystem(opts) {
     await i.editReply({ content: '🚫 Key `' + key + '` revoked.' + (reason ? ' Reason: ' + reason : '') });
   }
 
-  async function cmdKeylist(i) {
+  async function cmdKeylist(i, scope = null) {
     const planFilter = i.options.getString('plan');
     await i.deferReply({ ephemeral: true });
 
@@ -923,6 +923,7 @@ function createKeySystem(opts) {
 
     const entries = Object.entries(all)
       .filter(function (e) { return !planFilter || (e[1].plan === planFilter); })
+      .filter(function (e) { return !scope || keyMenuOf(e[1]) === scope; })
       .sort(function (a, b) { return (b[1].createdAt || 0) - (a[1].createdAt || 0); });
 
     if (!entries.length) {
@@ -1091,11 +1092,32 @@ function createKeySystem(opts) {
     const known = ['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'hxgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
     if (known.indexOf(name) === -1) return false;
 
-    if (!KEY_ADMIN_IDS.has(i.user.id) &&
-        !(name === 'luxisgen' && i.user.id === LUXIS_ADMIN_ID) &&
-        !(name === 'hxgen' && i.user.id === HX_ADMIN_ID)) {
+    // Full admins can manage everything. Product admins are scoped to their own menu.
+    const fullAdmin = KEY_ADMIN_IDS.has(i.user.id);
+    const scope = fullAdmin ? null
+      : i.user.id === LUXIS_ADMIN_ID ? 'luxis'
+      : i.user.id === HX_ADMIN_ID ? 'hx'
+      : false;
+    if (scope === false) {
       await i.reply({ content: '❌ You are not allowed to use this command.', ephemeral: true });
       return true;
+    }
+
+    if ((scope && name === 'luxisgen' && scope !== 'luxis') ||
+        (scope && name === 'hxgen' && scope !== 'hx') ||
+        (scope && name === 'newloader')) {
+      await i.reply({ content: '❌ This command is not available for your product.', ephemeral: true });
+      return true;
+    }
+
+    // A scoped admin may only touch a key that belongs to their own menu.
+    if (scope && ['keyinfo', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(name) !== -1) {
+      const targetKey = normalizeKey(i.options.getString('key'));
+      const targetRec = ((await readGist()).keys || {})[targetKey];
+      if (!targetRec || keyMenuOf(targetRec) !== scope) {
+        await i.reply({ content: '❌ You can only manage ' + MENUS[scope].name + ' keys.', ephemeral: true });
+        return true;
+      }
     }
 
     try {
@@ -1108,7 +1130,7 @@ function createKeySystem(opts) {
       else if (name === 'keyinfo') await cmdKeyinfo(i);
       else if (name === 'keyreset') await cmdKeyreset(i);
       else if (name === 'keyrevoke') await cmdKeyrevoke(i);
-      else if (name === 'keylist') await cmdKeylist(i);
+      else if (name === 'keylist') await cmdKeylist(i, scope);
       else if (name === 'pause') await cmdPause(i);
       else if (name === 'extend') await changeKeyTime(i, 1);
       else if (name === 'shorten') await changeKeyTime(i, -1);
