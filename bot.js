@@ -36,6 +36,9 @@ const KEY_ADMIN_IDS = new Set([
   '1567885438247641110',
 ]);
 
+// This account may ONLY use /luxisgen (Lunix Rob Run), never the other key commands.
+const LUXIS_ADMIN_ID = '1567885438247641110';
+
 // /newloader posts here. The download site itself is announced in the other one.
 const LOADER_ANNOUNCE_CHANNEL_ID = '1568762187785314504';
 const SITE_INFO_CHANNEL_ID = '1568756502808756375';
@@ -47,7 +50,7 @@ const OWNER_NAME = process.env.OWNER_NAME || 'Tom';
 
 const KEY_PREFIX = 'SCORPION';
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const KEY_PATTERN = /^SCORPION-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+const KEY_PATTERN = /^(SCORPION|LUXIS)-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
 // Plan -> duration. null = lifetime.
 const PLAN_MS = {
@@ -88,6 +91,8 @@ const MENUS = {
             plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
   cs2:    { slug: 'cs2',    name: 'CS2',    title: 'CS2 Keys',    command: 'cs2gen',
             plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
+  luxis:  { slug: 'luxis', name: 'Lunix Rob Run', title: 'Lunix Rob Run Keys', command: 'luxisgen', prefix: 'LUXIS',
+             plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
 };
 
 function isKnownPlan(plan) {
@@ -114,8 +119,13 @@ function isCs2Product(name) {
   return n === 'cs2' || n === 'counterstrike2' || n === 'counterstrike';
 }
 
+function isLunixProduct(name) {
+  const n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return n === 'luxis' || n === 'lunix' || n === 'lunixrobrun';
+}
+
 function hasLimitedPlans(name) {
-  return isRobRunProduct(name) || isRetracProduct(name) || isCs2Product(name);
+  return isRobRunProduct(name) || isRetracProduct(name) || isCs2Product(name) || isLunixProduct(name);
 }
 
 const KEY_EMBED_COLOR = 0x2b2b2b;
@@ -125,14 +135,14 @@ const LAST_SEEN_THROTTLE = 60 * 1000;
 
 // ---- key helpers -----------------------------------------------------------
 
-function generateKey() {
+function generateKey(prefix = KEY_PREFIX) {
   const groups = [];
   for (let g = 0; g < 4; g++) {
     let part = '';
     for (let i = 0; i < 4; i++) part += KEY_ALPHABET[crypto.randomInt(KEY_ALPHABET.length)];
     groups.push(part);
   }
-  return KEY_PREFIX + '-' + groups.join('-');
+  return prefix + '-' + groups.join('-');
 }
 
 function normalizeKey(input) {
@@ -140,9 +150,11 @@ function normalizeKey(input) {
   const cleaned = String(input).trim().toUpperCase().replace(/\s+/g, '');
   if (KEY_PATTERN.test(cleaned)) return cleaned;
   const bare = cleaned.replace(/-/g, '');
-  if (/^SCORPION[A-Z0-9]{16}$/.test(bare)) {
-    return bare.slice(0, 8) + '-' + bare.slice(8, 12) + '-' + bare.slice(12, 16) +
-      '-' + bare.slice(16, 20) + '-' + bare.slice(20, 24);
+  const match = bare.match(/^(SCORPION|LUXIS)([A-Z0-9]{16})$/);
+  if (match) {
+    const rest = match[2];
+    return match[1] + '-' + rest.slice(0, 4) + '-' + rest.slice(4, 8) + '-' +
+      rest.slice(8, 12) + '-' + rest.slice(12, 16);
   }
   return cleaned;
 }
@@ -697,6 +709,15 @@ function createKeySystem(opts) {
       ],
     },
     {
+      name: 'luxisgen',
+      description: 'Generate Lunix Rob Run license keys',
+      options: [
+        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: RR_PLAN_CHOICES },
+        { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
+        { name: 'note', description: 'Optional note', type: 3, required: false },
+      ],
+    },
+    {
       name: 'keyinfo',
       description: 'Show info about a license key',
       options: [{ name: 'key', description: 'License key', type: 3, required: true }],
@@ -772,8 +793,8 @@ function createKeySystem(opts) {
     const created = await mutate(function (keys) {
       const list = [];
       for (let n = 0; n < amount; n++) {
-        let key = generateKey();
-        while (keys[key]) key = generateKey();
+        let key = generateKey(menu.prefix || KEY_PREFIX);
+        while (keys[key]) key = generateKey(menu.prefix || KEY_PREFIX);
         keys[key] = newKeyRecord(menu.slug, plan, i.user.id, note);
         list.push(key);
       }
@@ -1054,10 +1075,10 @@ function createKeySystem(opts) {
     if (!i.isChatInputCommand()) return false;
 
     const name = i.commandName;
-    const known = ['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
+    const known = ['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
     if (known.indexOf(name) === -1) return false;
 
-    if (!KEY_ADMIN_IDS.has(i.user.id)) {
+    if (!KEY_ADMIN_IDS.has(i.user.id) && !(name === 'luxisgen' && i.user.id === LUXIS_ADMIN_ID)) {
       await i.reply({ content: '❌ You are not allowed to use this command.', ephemeral: true });
       return true;
     }
@@ -1067,6 +1088,7 @@ function createKeySystem(opts) {
       else if (name === 'rrgen') await cmdGen(i, 'rr');
       else if (name === 'retracgen') await cmdGen(i, 'retrac');
       else if (name === 'cs2gen') await cmdGen(i, 'cs2');
+      else if (name === 'luxisgen') await cmdGen(i, 'luxis');
       else if (name === 'keyinfo') await cmdKeyinfo(i);
       else if (name === 'keyreset') await cmdKeyreset(i);
       else if (name === 'keyrevoke') await cmdKeyrevoke(i);
@@ -2576,7 +2598,7 @@ client.on('interactionCreate', async (i) => {
   // ===== License keys =====
   if (await keyApi.handleInteraction(i)) {
     // Refresh the key overview right away after an admin key command.
-    if (['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
+    if (['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
       updateKeyOverview().catch(() => {});
     }
     return;
