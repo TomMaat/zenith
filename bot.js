@@ -1382,7 +1382,33 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 (async () => {
   try {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
-    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+    const registered = await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+
+    // /luxisgen en /hxgen zijn alleen zichtbaar voor de owners en de product-admin.
+    // De antwoorden blijven ephemeral (alleen zichtbaar voor de uitvoerder).
+    const byName = {};
+    for (const c of registered || []) if (c && c.name) byName[c.name] = c.id;
+    const owners = Array.from(KEY_ADMIN_IDS);
+    const permissions = [];
+    if (byName.luxisgen) {
+      permissions.push({
+        id: byName.luxisgen,
+        permissions: owners.concat(LUXIS_ADMIN_ID).map(function (uid) {
+          return { id: uid, type: 1, permission: true };
+        }),
+      });
+    }
+    if (byName.hxgen) {
+      permissions.push({
+        id: byName.hxgen,
+        permissions: owners.concat(HX_ADMIN_ID).map(function (uid) {
+          return { id: uid, type: 1, permission: true };
+        }),
+      });
+    }
+    if (permissions.length) {
+      await rest.put(Routes.applicationGuildCommandPermissions(CLIENT_ID, GUILD_ID), { body: permissions });
+    }
     console.log('Commands loaded');
   } catch (e) { console.error(e); }
 })();
