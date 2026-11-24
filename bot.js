@@ -38,6 +38,8 @@ const KEY_ADMIN_IDS = new Set([
 
 // This account may ONLY use /luxisgen (Lunix Rob Run), never the other key commands.
 const LUXIS_ADMIN_ID = '1567885438247641110';
+// This account may ONLY use /hxgen (HX Rob Run), never the other key commands.
+const HX_ADMIN_ID = '759935983264464966';
 
 // /newloader posts here. The download site itself is announced in the other one.
 const LOADER_ANNOUNCE_CHANNEL_ID = '1568762187785314504';
@@ -50,7 +52,7 @@ const OWNER_NAME = process.env.OWNER_NAME || 'Tom';
 
 const KEY_PREFIX = 'SCORPION';
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const KEY_PATTERN = /^(SCORPION|LUXIS)-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+const KEY_PATTERN = /^(SCORPION|LUXIS|HX)-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
 // Plan -> duration. null = lifetime.
 const PLAN_MS = {
@@ -92,6 +94,8 @@ const MENUS = {
   cs2:    { slug: 'cs2',    name: 'CS2',    title: 'CS2 Keys',    command: 'cs2gen',
             plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
   luxis:  { slug: 'luxis', name: 'Lunix Rob Run', title: 'Lunix Rob Run Keys', command: 'luxisgen', prefix: 'LUXIS',
+             plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
+  hx:     { slug: 'hx',    name: 'HX Rob Run', title: 'HX Rob Run Keys', command: 'hxgen', prefix: 'HX',
              plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
 };
 
@@ -150,7 +154,7 @@ function normalizeKey(input) {
   const cleaned = String(input).trim().toUpperCase().replace(/\s+/g, '');
   if (KEY_PATTERN.test(cleaned)) return cleaned;
   const bare = cleaned.replace(/-/g, '');
-  const match = bare.match(/^(SCORPION|LUXIS)([A-Z0-9]{16})$/);
+  const match = bare.match(/^(SCORPION|LUXIS|HX)([A-Z0-9]{16})$/);
   if (match) {
     const rest = match[2];
     return match[1] + '-' + rest.slice(0, 4) + '-' + rest.slice(4, 8) + '-' +
@@ -718,6 +722,15 @@ function createKeySystem(opts) {
       ],
     },
     {
+      name: 'hxgen',
+      description: 'Generate HX Rob Run license keys',
+      options: [
+        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: RR_PLAN_CHOICES },
+        { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
+        { name: 'note', description: 'Optional note', type: 3, required: false },
+      ],
+    },
+    {
       name: 'keyinfo',
       description: 'Show info about a license key',
       options: [{ name: 'key', description: 'License key', type: 3, required: true }],
@@ -1075,10 +1088,12 @@ function createKeySystem(opts) {
     if (!i.isChatInputCommand()) return false;
 
     const name = i.commandName;
-    const known = ['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
+    const known = ['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'hxgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
     if (known.indexOf(name) === -1) return false;
 
-    if (!KEY_ADMIN_IDS.has(i.user.id) && !(name === 'luxisgen' && i.user.id === LUXIS_ADMIN_ID)) {
+    if (!KEY_ADMIN_IDS.has(i.user.id) &&
+        !(name === 'luxisgen' && i.user.id === LUXIS_ADMIN_ID) &&
+        !(name === 'hxgen' && i.user.id === HX_ADMIN_ID)) {
       await i.reply({ content: '❌ You are not allowed to use this command.', ephemeral: true });
       return true;
     }
@@ -1089,6 +1104,7 @@ function createKeySystem(opts) {
       else if (name === 'retracgen') await cmdGen(i, 'retrac');
       else if (name === 'cs2gen') await cmdGen(i, 'cs2');
       else if (name === 'luxisgen') await cmdGen(i, 'luxis');
+      else if (name === 'hxgen') await cmdGen(i, 'hx');
       else if (name === 'keyinfo') await cmdKeyinfo(i);
       else if (name === 'keyreset') await cmdKeyreset(i);
       else if (name === 'keyrevoke') await cmdKeyrevoke(i);
@@ -2598,7 +2614,7 @@ client.on('interactionCreate', async (i) => {
   // ===== License keys =====
   if (await keyApi.handleInteraction(i)) {
     // Refresh the key overview right away after an admin key command.
-    if (['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
+    if (['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'hxgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
       updateKeyOverview().catch(() => {});
     }
     return;
