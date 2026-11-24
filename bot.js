@@ -2406,7 +2406,7 @@ async function setupRRPriceList() {
       .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(LOGO)
       .addFields(
-        { name: '💰 Pricing', value: '```\n1 Month   →  €7.50\nLifetime  →  €15.-\n```', inline: false }
+        { name: '💰 Pricing', value: '```\n1 Month   →  €5.00\nLifetime  →  €10.-\n```', inline: false }
       )
       .setFooter({ text: 'Scorpion', iconURL: LOGO });
 
