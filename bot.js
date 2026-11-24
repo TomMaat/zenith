@@ -36,9 +36,9 @@ const KEY_ADMIN_IDS = new Set([
   '1567885438247641110',
 ]);
 
-// This account may ONLY use /luxisgen (Lunix Rob Run), never the other key commands.
+// Alleen /luxisgen (en beheer van LUXIS-keys) voor dit account.
 const LUXIS_ADMIN_ID = '1462997840803532901';
-// This account may ONLY use /hxgen (HX Rob Run), never the other key commands.
+// Alleen /hxgen (en beheer van HX-keys) voor dit account.
 const HX_ADMIN_ID = '759935983264464966';
 
 // /newloader posts here. The download site itself is announced in the other one.
