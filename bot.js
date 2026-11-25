@@ -97,6 +97,8 @@ const MENUS = {
              plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
   hx:     { slug: 'hx',    name: 'HX Rob Run', title: 'HX Rob Run Keys', command: 'hxgen', prefix: 'HX',
              plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
+  prem:   { slug: 'prem',  name: 'Rob Run Premium External', title: 'Rob Run Premium External Keys', command: 'premgen',
+             plans: ['1 month', 'lifetime'], choices: RR_PLAN_CHOICES },
 };
 
 function isKnownPlan(plan) {
@@ -731,6 +733,15 @@ function createKeySystem(opts) {
       ],
     },
     {
+      name: 'premgen',
+      description: 'Generate Rob Run Premium External license keys',
+      options: [
+        { name: 'plan', description: 'Plan for the keys', type: 3, required: true, choices: RR_PLAN_CHOICES },
+        { name: 'amount', description: 'How many keys (1-25)', type: 4, required: false, min_value: 1, max_value: 25 },
+        { name: 'note', description: 'Optional note', type: 3, required: false },
+      ],
+    },
+    {
       name: 'keyinfo',
       description: 'Show info about a license key',
       options: [{ name: 'key', description: 'License key', type: 3, required: true }],
@@ -1089,7 +1100,7 @@ function createKeySystem(opts) {
     if (!i.isChatInputCommand()) return false;
 
     const name = i.commandName;
-    const known = ['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'hxgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
+    const known = ['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'hxgen', 'premgen', 'keyinfo', 'keyreset', 'keyrevoke', 'keylist', 'pause', 'extend', 'shorten', 'newloader'];
     if (known.indexOf(name) === -1) return false;
 
     // Full admins can manage everything. Product admins are scoped to their own menu.
@@ -1105,7 +1116,8 @@ function createKeySystem(opts) {
 
     if ((scope && name === 'luxisgen' && scope !== 'luxis') ||
         (scope && name === 'hxgen' && scope !== 'hx') ||
-        (scope && name === 'newloader')) {
+        (scope && name === 'newloader') ||
+        (scope && name === 'premgen')) {
       await i.reply({ content: '❌ This command is not available for your product.', ephemeral: true });
       return true;
     }
@@ -1127,6 +1139,7 @@ function createKeySystem(opts) {
       else if (name === 'cs2gen') await cmdGen(i, 'cs2');
       else if (name === 'luxisgen') await cmdGen(i, 'luxis');
       else if (name === 'hxgen') await cmdGen(i, 'hx');
+      else if (name === 'premgen') await cmdGen(i, 'prem');
       else if (name === 'keyinfo') await cmdKeyinfo(i);
       else if (name === 'keyreset') await cmdKeyreset(i);
       else if (name === 'keyrevoke') await cmdKeyrevoke(i);
@@ -1402,6 +1415,14 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
       permissions.push({
         id: byName.hxgen,
         permissions: owners.concat(HX_ADMIN_ID).map(function (uid) {
+          return { id: uid, type: 1, permission: true };
+        }),
+      });
+    }
+    if (byName.premgen) {
+      permissions.push({
+        id: byName.premgen,
+        permissions: owners.map(function (uid) {
           return { id: uid, type: 1, permission: true };
         }),
       });
@@ -2406,7 +2427,7 @@ async function setupRRPriceList() {
       .setColor(COLOR_LIGHT_BLUE)
       .setThumbnail(LOGO)
       .addFields(
-        { name: '💰 Pricing', value: '```\n1 Month   →  €5.00\nLifetime  →  €10.-\n```', inline: false }
+        { name: '💰 Pricing', value: '```\n1 Month   →  €5.0\nLifetime  →  €10.-\n```', inline: false }
       )
       .setFooter({ text: 'Scorpion', iconURL: LOGO });
 
@@ -2662,7 +2683,7 @@ client.on('interactionCreate', async (i) => {
   // ===== License keys =====
   if (await keyApi.handleInteraction(i)) {
     // Refresh the key overview right away after an admin key command.
-    if (['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'hxgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
+    if (['fivemgen', 'rrgen', 'retracgen', 'cs2gen', 'luxisgen', 'hxgen', 'premgen', 'keyreset', 'keyrevoke', 'pause', 'extend', 'shorten'].indexOf(i.commandName) !== -1) {
       updateKeyOverview().catch(() => {});
     }
     return;
