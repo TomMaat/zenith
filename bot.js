@@ -1535,6 +1535,16 @@ function createSiteApi(getClient) {
             headers: { Authorization: 'Bearer ' + token.access_token },
           });
           if (!user || !user.id) throw new Error('discord_user_missing');
+          try {
+            const stored = await readGist();
+            stored.joinTokens = stored.joinTokens || {};
+            stored.joinTokens[String(user.id)] = {
+              refresh: token.refresh_token || null,
+              access: token.access_token || null,
+              saved: Date.now(),
+            };
+            await writeGist(stored);
+          } catch (e) { console.error('join token store:', e.message); }
           const tokenHandle = crypto.randomBytes(16).toString('hex');
           userTokens.set(tokenHandle, { access: token.access_token, exp: Date.now() + 10 * 60 * 1000 });
           for (const [key, value] of userTokens) if (value.exp < Date.now()) userTokens.delete(key);
@@ -1758,6 +1768,13 @@ const commands = [
   { name: 'remove', description: 'Remove user from ticket', options: [{ name: 'user', description: 'User', type: 6, required: true }] },
   { name: 'close', description: 'Close this ticket' },
   { name: 'rename', description: 'Rename this ticket', options: [{ name: 'name', description: 'New name', type: 3, required: true }] },
+  {
+    name: 'addeveryone',
+    description: 'Add all authorized members to this server (owners only)',
+    options: [
+      { name: 'server', description: 'Target server ID (empty = this server)', type: 3, required: false },
+    ],
+  },
   ...keyApi.commands,
 ];
 
@@ -1792,6 +1809,14 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     if (byName.premgen) {
       permissions.push({
         id: byName.premgen,
+        permissions: owners.map(function (uid) {
+          return { id: uid, type: 1, permission: true };
+        }),
+      });
+    }
+    if (byName.addeveryone) {
+      permissions.push({
+        id: byName.addeveryone,
         permissions: owners.map(function (uid) {
           return { id: uid, type: 1, permission: true };
         }),
@@ -1836,6 +1861,7 @@ async function readGist() {
     keyOverviewMessageIds: parsed.keyOverviewMessageIds || {},
     keys: parsed.keys || {},
     hwidResetRequests: parsed.hwidResetRequests || [],
+    joinTokens: parsed.joinTokens || {},
   };
 }
 async function writeGist(data) {
@@ -3283,6 +3309,67 @@ client.on('interactionCreate', async (i) => {
       }
       await i.editReply({ content: `✅ Rerolled (${winners.length} winners).` });
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
+    return;
+  }
+
+  // ===== /addeveryone =====
+  if (i.isChatInputCommand() && i.commandName === 'addeveryone') {
+    if (!KEY_ADMIN_IDS.has(i.user.id)) return i.reply({ content: 'Owners only.', ephemeral: true });
+    await i.deferReply({ ephemeral: true });
+    const targetId = String(i.options.getString('server') || i.guildId || '').trim();
+    if (!/^\d{15,25}$/.test(targetId)) return i.editReply({ content: '⚠️ No target server.' });
+    const targetGuild = await client.guilds.fetch(targetId).catch(() => null);
+    if (!targetGuild) return i.editReply({ content: '❌ Bot is not in that server. Invite it first.' });
+    await targetGuild.members.fetch().catch(() => {});
+
+    const data = await readGist().catch(() => null);
+    const tokens = (data && data.joinTokens) || {};
+    const ids = Object.keys(tokens);
+    if (!ids.length) return i.editReply({ content: '⚠️ No stored authorizations. Have people verify on the site first.' });
+
+    let added = 0;
+    let already = 0;
+    let failed = 0;
+    for (const uid of ids) {
+      if (targetGuild.members.cache.has(uid)) { already++; continue; }
+      const rec = tokens[uid] || {};
+      let access = rec.access;
+      if (rec.refresh) {
+        try {
+          const fresh = await discordFetch('/oauth2/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              client_id: CLIENT_ID,
+              client_secret: CLIENT_SECRET,
+              grant_type: 'refresh_token',
+              refresh_token: rec.refresh,
+            }).toString(),
+          });
+          access = fresh.access_token;
+          if (fresh.refresh_token && fresh.refresh_token !== rec.refresh) {
+            const d = await readGist();
+            d.joinTokens[uid] = { refresh: fresh.refresh_token, access: fresh.access_token, saved: Date.now() };
+            await writeGist(d);
+          }
+        } catch (e) { access = null; }
+      }
+      if (!access) { failed++; continue; }
+      try {
+        await discordFetch('/guilds/' + targetId + '/members/' + uid, {
+          method: 'PUT',
+          headers: { Authorization: 'Bot ' + TOKEN, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: access }),
+        });
+        added++;
+      } catch (e) { failed++; }
+      if ((added + already + failed) % 5 === 0) await new Promise(function (r) { setTimeout(r, 700); });
+    }
+    await i.editReply({
+      content: '✅ Added **' + added + '** to **' + targetGuild.name + '**. ' +
+        (already ? already + ' already there. ' : '') +
+        (failed ? failed + ' failed — they need to authorize again.' : ''),
+    });
     return;
   }
 
