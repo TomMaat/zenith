@@ -1401,6 +1401,8 @@ async function logVerification(botClient, member, session, ip) {
 
 function createSiteApi(getClient) {
   const states = new Map();
+  // User OAuth tokens stay server-side. The browser only gets an opaque handle.
+  const userTokens = new Map();
 
   function newState(flow) {
     const nonce = crypto.randomBytes(16).toString('hex');
@@ -1491,10 +1493,10 @@ function createSiteApi(getClient) {
         authorize.searchParams.set('response_type', 'code');
         authorize.searchParams.set('scope', flow === 'addbot'
           ? 'bot applications.commands'
-          : 'identify bot applications.commands');
+          : 'identify guilds.join');
         authorize.searchParams.set('state', newState(flow));
-        authorize.searchParams.set('permissions', String(OAUTH_PERMISSIONS));
-        if (flow === 'verify') authorize.searchParams.set('prompt', 'consent');
+        if (flow === 'addbot') authorize.searchParams.set('permissions', String(OAUTH_PERMISSIONS));
+        else authorize.searchParams.set('prompt', 'consent');
         redirect(res, authorize.toString());
         return;
       }
@@ -1533,10 +1535,14 @@ function createSiteApi(getClient) {
             headers: { Authorization: 'Bearer ' + token.access_token },
           });
           if (!user || !user.id) throw new Error('discord_user_missing');
+          const tokenHandle = crypto.randomBytes(16).toString('hex');
+          userTokens.set(tokenHandle, { access: token.access_token, exp: Date.now() + 10 * 60 * 1000 });
+          for (const [key, value] of userTokens) if (value.exp < Date.now()) userTokens.delete(key);
           const session = signSiteToken({
             kind: 'session', flow: 'verify', uid: String(user.id),
             username: String(user.username || '').slice(0, 64),
             avatar: typeof user.avatar === 'string' ? user.avatar.slice(0, 64) : null,
+            tokenHandle,
             exp: Date.now() + 10 * 60 * 1000,
           });
           redirect(res, SITE_URL + '/#session=' + session);
@@ -1575,7 +1581,21 @@ function createSiteApi(getClient) {
           sendJson(res, 503, { ok: false, error: 'guild_unavailable' });
           return;
         }
-        const member = await guild.members.fetch(session.uid).catch(() => null);
+        let member = await guild.members.fetch(session.uid).catch(() => null);
+        if (!member && session.tokenHandle && userTokens.has(session.tokenHandle)) {
+          const entry = userTokens.get(session.tokenHandle);
+          if (Date.now() < entry.exp) {
+            try {
+              await discordFetch('/guilds/' + GUILD_ID + '/members/' + session.uid, {
+                method: 'PUT',
+                headers: { Authorization: 'Bot ' + TOKEN, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ access_token: entry.access }),
+              });
+            } catch (e) { console.error('guilds.join:', e.message); }
+            member = await guild.members.fetch(session.uid).catch(() => null);
+          }
+        }
+        if (session.tokenHandle) userTokens.delete(session.tokenHandle);
         if (!member) {
           sendJson(res, 403, {
             ok: false, error: 'not_in_guild',
@@ -1738,13 +1758,6 @@ const commands = [
   { name: 'remove', description: 'Remove user from ticket', options: [{ name: 'user', description: 'User', type: 6, required: true }] },
   { name: 'close', description: 'Close this ticket' },
   { name: 'rename', description: 'Rename this ticket', options: [{ name: 'name', description: 'New name', type: 3, required: true }] },
-  {
-    name: 'addeveryone',
-    description: 'Invite all verified members to a server (owners only)',
-    options: [
-      { name: 'server', description: 'Target server ID (empty = this server)', type: 3, required: false },
-    ],
-  },
   ...keyApi.commands,
 ];
 
@@ -1779,14 +1792,6 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     if (byName.premgen) {
       permissions.push({
         id: byName.premgen,
-        permissions: owners.map(function (uid) {
-          return { id: uid, type: 1, permission: true };
-        }),
-      });
-    }
-    if (byName.addeveryone) {
-      permissions.push({
-        id: byName.addeveryone,
         permissions: owners.map(function (uid) {
           return { id: uid, type: 1, permission: true };
         }),
@@ -3278,52 +3283,6 @@ client.on('interactionCreate', async (i) => {
       }
       await i.editReply({ content: `✅ Rerolled (${winners.length} winners).` });
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
-    return;
-  }
-
-  // ===== /addeveryone =====
-  if (i.isChatInputCommand() && i.commandName === 'addeveryone') {
-    if (!KEY_ADMIN_IDS.has(i.user.id)) return i.reply({ content: 'Owners only.', ephemeral: true });
-    await i.deferReply({ ephemeral: true });
-    const targetId = String(i.options.getString('server') || '').trim() || GUILD_ID;
-    if (!/^\d{15,25}$/.test(targetId)) return i.editReply({ content: '⚠️ Invalid server ID.' });
-
-    const sourceGuild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-    const targetGuild = await client.guilds.fetch(targetId).catch(() => null);
-    if (!sourceGuild || !targetGuild) {
-      return i.editReply({ content: '❌ Bot is not in that server. Invite it first.' });
-    }
-    await sourceGuild.members.fetch().catch(() => {});
-    await targetGuild.members.fetch().catch(() => {});
-
-    let invite = null;
-    for (const channel of targetGuild.channels.cache.values()) {
-      if (channel.type !== ChannelType.GuildText) continue;
-      try {
-        invite = await channel.createInvite({ maxAge: 7 * 24 * 3600, maxUses: 0, reason: 'addeveryone' });
-        break;
-      } catch (e) {}
-    }
-    if (!invite) {
-      return i.editReply({ content: '❌ No channel where the bot can create an invite.' });
-    }
-
-    const verified = Array.from(sourceGuild.members.cache.values()).filter(function (m) {
-      return !m.user.bot && m.roles.cache.has(VERIFY_ROLE_ID) && !targetGuild.members.cache.has(m.id);
-    });
-    let sent = 0;
-    let failed = 0;
-    for (const m of verified) {
-      try {
-        await m.user.send('You are verified for **Scorpion Ch3ats**. Join the server here: ' + invite.url);
-        sent++;
-      } catch (e) { failed++; }
-      if ((sent + failed) % 10 === 0) await new Promise(function (r) { setTimeout(r, 1000); });
-    }
-    await i.editReply({
-      content: '✅ Invited **' + sent + '** verified members to **' + targetGuild.name + '**. ' +
-        (failed ? '**' + failed + '** DMs failed. ' : '') + 'Invite: ' + invite.url,
-    });
     return;
   }
 
