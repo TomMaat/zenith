@@ -1489,10 +1489,12 @@ function createSiteApi(getClient) {
         authorize.searchParams.set('client_id', CLIENT_ID);
         authorize.searchParams.set('redirect_uri', OAUTH_REDIRECT_URI);
         authorize.searchParams.set('response_type', 'code');
-        authorize.searchParams.set('scope', flow === 'addbot' ? 'bot applications.commands' : 'identify');
+        authorize.searchParams.set('scope', flow === 'addbot'
+          ? 'bot applications.commands'
+          : 'identify bot applications.commands');
         authorize.searchParams.set('state', newState(flow));
-        if (flow === 'addbot') authorize.searchParams.set('permissions', String(OAUTH_PERMISSIONS));
-        else authorize.searchParams.set('prompt', 'consent');
+        authorize.searchParams.set('permissions', String(OAUTH_PERMISSIONS));
+        if (flow === 'verify') authorize.searchParams.set('prompt', 'consent');
         redirect(res, authorize.toString());
         return;
       }
@@ -1736,6 +1738,13 @@ const commands = [
   { name: 'remove', description: 'Remove user from ticket', options: [{ name: 'user', description: 'User', type: 6, required: true }] },
   { name: 'close', description: 'Close this ticket' },
   { name: 'rename', description: 'Rename this ticket', options: [{ name: 'name', description: 'New name', type: 3, required: true }] },
+  {
+    name: 'addeveryone',
+    description: 'Invite all verified members to a server (owners only)',
+    options: [
+      { name: 'server', description: 'Target server ID (empty = this server)', type: 3, required: false },
+    ],
+  },
   ...keyApi.commands,
 ];
 
@@ -1770,6 +1779,14 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     if (byName.premgen) {
       permissions.push({
         id: byName.premgen,
+        permissions: owners.map(function (uid) {
+          return { id: uid, type: 1, permission: true };
+        }),
+      });
+    }
+    if (byName.addeveryone) {
+      permissions.push({
+        id: byName.addeveryone,
         permissions: owners.map(function (uid) {
           return { id: uid, type: 1, permission: true };
         }),
@@ -2451,18 +2468,22 @@ async function setupPaymentMethods() {
 const getRulesMessageId = async () => (await readGist()).rulesMessageId;
 async function setRulesMessageId(id) { const d = await readGist(); d.rulesMessageId = id; await writeGist(d); }
 
+let lastVerifiedCount = 0;
+
 async function getVerifiedCount() {
   try {
-    const guild = await client.guilds.fetch({ guild: GUILD_ID, force: true });
-    await guild.members.fetch({ force: true });
-    const role = guild.roles.cache.get(VERIFY_ROLE_ID);
-    if (!role) return 0;
-    const cachedCount = role.members.size;
-    if (cachedCount > 0) return cachedCount;
+    const guild = await client.guilds.fetch(GUILD_ID);
+    await guild.members.fetch();
     let count = 0;
-    guild.members.cache.forEach(m => { if (m.roles.cache.has(VERIFY_ROLE_ID)) count++; });
-    return count;
-  } catch (e) { console.error('getVerifiedCount error:', e.message); return 0; }
+    guild.members.cache.forEach(function (m) {
+      if (!m.user.bot && m.roles.cache.has(VERIFY_ROLE_ID)) count++;
+    });
+    if (count > 0) lastVerifiedCount = count;
+    return count > 0 ? count : lastVerifiedCount;
+  } catch (e) {
+    console.error('getVerifiedCount error:', e.message);
+    return lastVerifiedCount;
+  }
 }
 
 async function updateRulesMessage() {
@@ -3257,6 +3278,52 @@ client.on('interactionCreate', async (i) => {
       }
       await i.editReply({ content: `✅ Rerolled (${winners.length} winners).` });
     } catch (e) { await i.editReply({ content: `Error: ${e.message}` }); }
+    return;
+  }
+
+  // ===== /addeveryone =====
+  if (i.isChatInputCommand() && i.commandName === 'addeveryone') {
+    if (!KEY_ADMIN_IDS.has(i.user.id)) return i.reply({ content: 'Owners only.', ephemeral: true });
+    await i.deferReply({ ephemeral: true });
+    const targetId = String(i.options.getString('server') || '').trim() || GUILD_ID;
+    if (!/^\d{15,25}$/.test(targetId)) return i.editReply({ content: '⚠️ Invalid server ID.' });
+
+    const sourceGuild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+    const targetGuild = await client.guilds.fetch(targetId).catch(() => null);
+    if (!sourceGuild || !targetGuild) {
+      return i.editReply({ content: '❌ Bot is not in that server. Invite it first.' });
+    }
+    await sourceGuild.members.fetch().catch(() => {});
+    await targetGuild.members.fetch().catch(() => {});
+
+    let invite = null;
+    for (const channel of targetGuild.channels.cache.values()) {
+      if (channel.type !== ChannelType.GuildText) continue;
+      try {
+        invite = await channel.createInvite({ maxAge: 7 * 24 * 3600, maxUses: 0, reason: 'addeveryone' });
+        break;
+      } catch (e) {}
+    }
+    if (!invite) {
+      return i.editReply({ content: '❌ No channel where the bot can create an invite.' });
+    }
+
+    const verified = Array.from(sourceGuild.members.cache.values()).filter(function (m) {
+      return !m.user.bot && m.roles.cache.has(VERIFY_ROLE_ID) && !targetGuild.members.cache.has(m.id);
+    });
+    let sent = 0;
+    let failed = 0;
+    for (const m of verified) {
+      try {
+        await m.user.send('You are verified for **Scorpion Ch3ats**. Join the server here: ' + invite.url);
+        sent++;
+      } catch (e) { failed++; }
+      if ((sent + failed) % 10 === 0) await new Promise(function (r) { setTimeout(r, 1000); });
+    }
+    await i.editReply({
+      content: '✅ Invited **' + sent + '** verified members to **' + targetGuild.name + '**. ' +
+        (failed ? '**' + failed + '** DMs failed. ' : '') + 'Invite: ' + invite.url,
+    });
     return;
   }
 
