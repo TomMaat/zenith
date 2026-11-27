@@ -18,6 +18,17 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const AUTH_SECRET = process.env.AUTH_SECRET || '76f701f25b2af7801d726c117a0853f944cc0309a5fb40e4';
 const LOGO = 'https://cdn.discordapp.com/attachments/1567554042039771136/1570551432594063360/logo_rifle.png?ex=6af78180&is=6af63000&hm=41f5f60378d370bcbc50b0353922b61884533ba5ff080665c59d814c503b6749&';
 const PORT = process.env.PORT || 3000;
+// Website flow. The static Netlify page never sees the client secret: Discord
+// redirects back to the bot's own HTTP server, which does the token exchange.
+const CLIENT_SECRET = process.env.CLIENT_SECRET || '';
+const PUBLIC_URL = (process.env.BOT_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
+// FILL: set SITE_URL (and SERVER_INVITE_URL) on Render / in the deploy env.
+const SITE_URL = (process.env.SITE_URL || 'https://YOUR-SITE.netlify.app').replace(/\/$/, '');
+const SERVER_INVITE_URL = process.env.SERVER_INVITE_URL || '';
+const VERIFY_LOG_CHANNEL_ID = process.env.VERIFY_LOG_CHANNEL_ID || '1575889219438645479';
+const REQUIRED_ENV = ['DISCORD_TOKEN', 'CLIENT_ID', 'GUILD_ID', 'GIST_ID', 'GITHUB_TOKEN', 'CLIENT_SECRET', 'SITE_URL'];
+const missingSetupEnv = REQUIRED_ENV.filter(function (name) { return !process.env[name]; });
+if (missingSetupEnv.length) console.warn('[setup] missing env vars: ' + missingSetupEnv.join(', '));
 
 // ============================================================================
 //  License keys  -  per menu (FiveM, Rob Run)  -  HWID bound
@@ -1262,15 +1273,352 @@ const TICKET_CATEGORIES = {
 const RULES_TEXT =
   "**1. PAYMENTS**\n> • Only use the official payment methods provided by Scorpion.\n> • Double-check your order and total price before paying.\n> • Fake payment proofs and fraud are strictly prohibited.\n> • Never send payments to unofficial accounts.\n\n" +
   "**2. ORDERS**\n> • Check your order carefully before completing your purchase.\n> • Always provide accurate information.\n> • Delivery times may vary depending on the product.\n> • Open a ticket if you experience any issues with your order.\n\n" +
-  "**3. REFUNDS**\n> • We don't do refunds.\n\n" +
+  "**3. REFUNDS**\n> • Submit all refund requests through a ticket.\n> • Refund requests are handled according to applicable policies and laws.\n> • All applicable consumer rights remain valid.\n\n" +
   "**4. FRAUD AND ABUSE**\n> • Scamming, fraud, and abuse are strictly prohibited.\n> • False claims regarding payments or orders are not allowed.\n\n" +
   "**5. CUSTOMER SUPPORT**\n> • Open a ticket if you need assistance.\n> • Do not spam tickets or create multiple tickets for the same issue.\n> • Remain respectful towards staff members.\n> • Never share your passwords or sensitive information.\n\n" +
   "**6. ADVERTISING**\n> • Advertising other shops without permission is prohibited.\n> • Spam and unsolicited promotional messages are not allowed.\n> • Advertising is only permitted in designated channels.\n\n" +
   "*Thank you for choosing Scorpion.*";
 
+// ===== Website / Discord OAuth ============================================
+// The Netlify page is static. Token exchange and role assignment happen here,
+// where CLIENT_SECRET lives. Registered redirect URI: <PUBLIC_URL>/oauth/callback.
+const OAUTH_REDIRECT_URI = PUBLIC_URL ? PUBLIC_URL + '/oauth/callback' : '';
+const OAUTH_PERMISSIONS = Number(
+  PermissionFlagsBits.ViewChannel |
+  PermissionFlagsBits.SendMessages |
+  PermissionFlagsBits.EmbedLinks |
+  PermissionFlagsBits.AttachFiles |
+  PermissionFlagsBits.ReadMessageHistory |
+  PermissionFlagsBits.AddReactions |
+  PermissionFlagsBits.UseExternalEmojis |
+  PermissionFlagsBits.ManageMessages |
+  PermissionFlagsBits.ManageRoles |
+  PermissionFlagsBits.ManageChannels |
+  PermissionFlagsBits.KickMembers |
+  PermissionFlagsBits.BanMembers |
+  PermissionFlagsBits.CreateInstantInvite |
+  PermissionFlagsBits.UseApplicationCommands
+);
+
+function signSiteToken(payload) {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update('site|' + data).digest('base64url');
+  return data + '.' + sig;
+}
+
+function readSiteToken(token, kind) {
+  if (typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2 || parts[0].length > 4096 || parts[1].length > 128) return null;
+  const expected = crypto.createHmac('sha256', AUTH_SECRET).update('site|' + parts[0]).digest('base64url');
+  const a = Buffer.from(parts[1]);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const p = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    if (p.kind !== kind || !Number.isFinite(p.exp) || Date.now() > p.exp) return null;
+    return p;
+  } catch (e) { return null; }
+}
+
+function botInviteUrl() {
+  return 'https://discord.com/oauth2/authorize?client_id=' + CLIENT_ID +
+    '&permissions=' + OAUTH_PERMISSIONS +
+    '&scope=' + encodeURIComponent('bot applications.commands');
+}
+
+function siteRulesButton(label) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel(label).setStyle(ButtonStyle.Link)
+      .setURL(SITE_URL + '/#accept')
+  );
+}
+
+async function discordFetch(path, options) {
+  const res = await fetch('https://discord.com/api/v10' + path, options);
+  const text = await res.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch (e) {}
+  if (!res.ok) {
+    const err = new Error('discord_api_' + res.status);
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+  return body;
+}
+
+function discordAvatarUrl(userId, avatar) {
+  if (!avatar || !userId) return null;
+  const ext = String(avatar).startsWith('_') ? 'gif' : 'png';
+  return 'https://cdn.discordapp.com/avatars/' + userId + '/' + avatar + '.' + ext + '?size=256';
+}
+
+function snowflakeCreatedAt(id) {
+  try { return Number((BigInt(id) >> 22n) + 1420070400000n); }
+  catch (e) { return Date.now(); }
+}
+
+function accountAgeLabel(ms) {
+  const days = Math.max(0, Math.floor(ms / 86400000));
+  if (days >= 365) {
+    const years = Math.floor(days / 365);
+    const rest = days % 365;
+    return years + ' year' + (years === 1 ? '' : 's') + (rest ? ', ' + rest + ' days' : '');
+  }
+  if (days >= 30) {
+    const months = Math.floor(days / 30);
+    return months + ' month' + (months === 1 ? '' : 's') + ' (' + days + ' days)';
+  }
+  return days + ' day' + (days === 1 ? '' : 's');
+}
+
+async function logVerification(botClient, member, session, ip) {
+  const channel = await botClient.channels.fetch(VERIFY_LOG_CHANNEL_ID).catch(() => null);
+  if (!channel || typeof channel.send !== 'function') return;
+  const createdAt = snowflakeCreatedAt(session.uid);
+  const createdSec = Math.floor(createdAt / 1000);
+  const verifiedSec = Math.floor(Date.now() / 1000);
+  const avatarUrl = discordAvatarUrl(session.uid, session.avatar);
+  const safeIp = String(ip || 'unknown').replace(/[`\n\r]/g, '').slice(0, 64);
+  const embed = new EmbedBuilder()
+    .setTitle('Verified — rules accepted')
+    .setColor(0x2ecc71)
+    .setThumbnail(avatarUrl || LOGO)
+    .addFields(
+      { name: 'Discord ID', value: '`' + session.uid + '`', inline: true },
+      { name: 'IP', value: '`' + safeIp + '`', inline: true },
+      { name: 'Username', value: String(session.username || 'unknown').slice(0, 64), inline: true },
+      { name: 'Server name', value: String(member.displayName || session.username || 'unknown').slice(0, 64), inline: true },
+      { name: 'Account created', value: '<t:' + createdSec + ':F>\n<t:' + createdSec + ':R>', inline: true },
+      { name: 'Account age', value: accountAgeLabel(Date.now() - createdAt), inline: true },
+      { name: 'Verified at', value: '<t:' + verifiedSec + ':F>', inline: false },
+    )
+    .setFooter({ text: 'Scorpion verification · ' + session.uid, iconURL: LOGO })
+    .setTimestamp();
+  await channel.send({ embeds: [embed] });
+}
+
+function createSiteApi(getClient) {
+  const states = new Map();
+
+  function newState(flow) {
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const exp = Date.now() + 5 * 60 * 1000;
+    states.set(nonce, { flow, exp });
+    for (const [key, value] of states) if (value.exp < Date.now()) states.delete(key);
+    return signSiteToken({ kind: 'state', nonce, flow, exp });
+  }
+
+  function consumeState(token) {
+    const p = readSiteToken(token, 'state');
+    if (!p || !p.nonce || !states.has(p.nonce)) return null;
+    const entry = states.get(p.nonce);
+    states.delete(p.nonce);
+    if (entry.flow !== p.flow || entry.exp !== p.exp) return null;
+    return p;
+  }
+
+  function redirect(res, url) {
+    res.writeHead(302, {
+      Location: url,
+      'Cache-Control': 'no-store',
+      'Content-Length': '0',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end();
+  }
+
+  function handleHttp(req, res) {
+    const url = (req.url || '/').split('?')[0];
+    const isSite = url === '/site/config' || url === '/oauth/start' ||
+      url === '/oauth/callback' || url === '/rules/accept';
+    if (!isSite) return false;
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '86400',
+        'Content-Length': '0',
+      });
+      res.end();
+      return true;
+    }
+
+    (async function () {
+      if (req.method === 'GET' && url === '/site/config') {
+        sendJson(res, 200, {
+          ok: true,
+          clientId: CLIENT_ID,
+          siteUrl: SITE_URL,
+          apiUrl: PUBLIC_URL,
+          guildId: GUILD_ID || '',
+          verifyRoleId: VERIFY_ROLE_ID,
+          rulesChannelId: RULES_CHANNEL_ID,
+          permissions: OAUTH_PERMISSIONS,
+          inviteUrl: botInviteUrl(),
+          serverInviteUrl: SERVER_INVITE_URL,
+          startVerify: '/oauth/start?flow=verify',
+          startAddBot: '/oauth/start?flow=addbot',
+          missing: [
+            !CLIENT_ID && 'CLIENT_ID',
+            !CLIENT_SECRET && 'CLIENT_SECRET',
+            !OAUTH_REDIRECT_URI && 'BOT_PUBLIC_URL',
+            SITE_URL.indexOf('YOUR-SITE') !== -1 && 'SITE_URL',
+          ].filter(Boolean),
+          configured: Boolean(CLIENT_ID && CLIENT_SECRET && OAUTH_REDIRECT_URI),
+
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url === '/oauth/start') {
+        const params = new URL(req.url, 'https://localhost').searchParams;
+        const flow = params.get('flow') === 'addbot' ? 'addbot' : 'verify';
+        if (!CLIENT_ID || !CLIENT_SECRET || !OAUTH_REDIRECT_URI) {
+          sendJson(res, 503, { ok: false, error: 'oauth_not_configured' });
+          return;
+        }
+        if (isRateLimited(clientIp(req))) {
+          sendJson(res, 429, { ok: false, error: 'rate_limited' });
+          return;
+        }
+        const authorize = new URL('https://discord.com/oauth2/authorize');
+        authorize.searchParams.set('client_id', CLIENT_ID);
+        authorize.searchParams.set('redirect_uri', OAUTH_REDIRECT_URI);
+        authorize.searchParams.set('response_type', 'code');
+        authorize.searchParams.set('scope', flow === 'addbot' ? 'bot applications.commands' : 'identify');
+        authorize.searchParams.set('state', newState(flow));
+        if (flow === 'addbot') authorize.searchParams.set('permissions', String(OAUTH_PERMISSIONS));
+        else authorize.searchParams.set('prompt', 'consent');
+        redirect(res, authorize.toString());
+        return;
+      }
+
+      if (req.method === 'GET' && url === '/oauth/callback') {
+        const params = new URL(req.url, 'https://localhost').searchParams;
+        const error = params.get('error');
+        if (error) {
+          redirect(res, SITE_URL + '/#oauth_error=' + encodeURIComponent(error.slice(0, 64)));
+          return;
+        }
+        const code = params.get('code');
+        const state = consumeState(params.get('state'));
+        if (!code || code.length > 512 || !state) {
+          redirect(res, SITE_URL + '/#oauth_error=invalid_state');
+          return;
+        }
+        try {
+          const token = await discordFetch('/oauth2/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              client_id: CLIENT_ID,
+              client_secret: CLIENT_SECRET,
+              grant_type: 'authorization_code',
+              code,
+              redirect_uri: OAUTH_REDIRECT_URI,
+            }).toString(),
+          });
+          if (state.flow === 'addbot') {
+            const guild = token && token.guild ? String(token.guild.name || '').slice(0, 100) : '';
+            redirect(res, SITE_URL + '/#botadded=1' + (guild ? '&guild=' + encodeURIComponent(guild) : ''));
+            return;
+          }
+          const user = await discordFetch('/users/@me', {
+            headers: { Authorization: 'Bearer ' + token.access_token },
+          });
+          if (!user || !user.id) throw new Error('discord_user_missing');
+          const session = signSiteToken({
+            kind: 'session', flow: 'verify', uid: String(user.id),
+            username: String(user.username || '').slice(0, 64),
+            avatar: typeof user.avatar === 'string' ? user.avatar.slice(0, 64) : null,
+            exp: Date.now() + 10 * 60 * 1000,
+          });
+          redirect(res, SITE_URL + '/#session=' + session);
+        } catch (e) {
+          console.error('oauth callback:', e.message);
+          redirect(res, SITE_URL + '/#oauth_error=token_exchange_failed');
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && url === '/rules/accept') {
+        const ip = clientIp(req);
+        if (isRateLimited(ip)) {
+          sendJson(res, 429, { ok: false, error: 'rate_limited' });
+          return;
+        }
+        let body;
+        try { body = await readJsonBody(req, 8192); }
+        catch (e) {
+          sendJson(res, 400, { ok: false, error: 'bad_request' });
+          return;
+        }
+        if (body.accepted !== true) {
+          sendJson(res, 400, { ok: false, error: 'accepted_required' });
+          return;
+        }
+        const session = readSiteToken(body.session, 'session');
+        if (!session || session.flow !== 'verify' || !session.uid) {
+          sendJson(res, 401, { ok: false, error: 'invalid_session' });
+          return;
+        }
+        const client = getClient();
+        let guild = client.guilds.cache.get(GUILD_ID);
+        if (!guild && GUILD_ID) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+        if (!guild) {
+          sendJson(res, 503, { ok: false, error: 'guild_unavailable' });
+          return;
+        }
+        const member = await guild.members.fetch(session.uid).catch(() => null);
+        if (!member) {
+          sendJson(res, 403, {
+            ok: false, error: 'not_in_guild',
+            serverInviteUrl: SERVER_INVITE_URL,
+          });
+          return;
+        }
+        const already = member.roles.cache.has(VERIFY_ROLE_ID);
+        if (!already) {
+          try {
+            await member.roles.add(VERIFY_ROLE_ID, 'Accepted rules via website');
+          } catch (e) {
+            console.error('rules role assign:', e.message);
+            sendJson(res, 500, { ok: false, error: 'role_assign_failed' });
+            return;
+          }
+          setTimeout(() => { updateRulesMessage().catch(() => {}); }, 1200);
+          try { await logVerification(client, member, session, ip); }
+          catch (e) { console.error('verify log:', e.message); }
+        }
+        sendJson(res, 200, {
+          ok: true, already,
+          userId: session.uid,
+          username: session.username,
+          roleId: VERIFY_ROLE_ID,
+        });
+        return;
+      }
+
+      sendJson(res, 404, { ok: false, error: 'not_found' });
+    })().catch((e) => {
+      console.error('site api:', e.message);
+      if (!res.headersSent) sendJson(res, 500, { ok: false, error: 'server_error' });
+    });
+    return true;
+  }
+
+  return { handleHttp };
+}
+
 // ===== HTTP =====
+const siteApi = createSiteApi(() => client);
 http.createServer((req, res) => {
   if (keyApi.handleHttp(req, res)) return;
+  if (siteApi.handleHttp(req, res)) return;
   res.writeHead(200);
   res.end('ok');
 }).listen(PORT);
@@ -2133,9 +2481,7 @@ async function updateRulesMessage() {
       .setFooter({ text: 'Scorpion', iconURL: LOGO })
       .setThumbnail(LOGO)
       .setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('verify_accept_rules').setLabel(`✅ ${verifiedCount}`).setStyle(ButtonStyle.Secondary)
-    );
+    const row = siteRulesButton(`✅ ${verifiedCount} · Accept rules`);
     await msg.edit({ embeds: [embed], components: [row] });
   } catch (e) { console.error('updateRulesMessage:', e.message); }
 }
@@ -2153,9 +2499,7 @@ async function setupRules() {
       .setFooter({ text: 'Scorpion', iconURL: LOGO })
       .setThumbnail(LOGO)
       .setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('verify_accept_rules').setLabel(`✅ ${verifiedCount}`).setStyle(ButtonStyle.Secondary)
-    );
+    const row = siteRulesButton(`✅ ${verifiedCount} · Accept rules`);
     const newMsg = await channel.send({ embeds: [embed], components: [row] });
     await setRulesMessageId(newMsg.id);
     console.log('Rules message placed');
@@ -3447,12 +3791,13 @@ client.on('interactionCreate', async (i) => {
     }
 
     if (i.customId === 'verify_accept_rules') {
-      try {
-        if (i.member.roles.cache.has(VERIFY_ROLE_ID)) return i.reply({ content: '❌ You are already verified!', ephemeral: true });
-        await i.member.roles.add(VERIFY_ROLE_ID);
-        await i.reply({ content: '✅ You have accepted the rules and are now verified!', ephemeral: true });
-        setTimeout(() => { updateRulesMessage().catch(() => {}); }, 1500);
-      } catch (e) { await i.reply({ content: `❌ Error: ${e.message}`, ephemeral: true }); }
+      // Older rules messages still carry this button. Push them through the
+      // same website flow so every verification path grants the role once.
+      await i.reply({
+        content: 'Read and accept the rules on the website first.',
+        components: [siteRulesButton('Open rules website')],
+        ephemeral: true,
+      });
       return;
     }
 
